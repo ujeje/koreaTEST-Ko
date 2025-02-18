@@ -1,0 +1,54 @@
+# 한국투자증권 API 설정
+api:
+  key: "PSoCplC0bjmBXIK1JV3DL42ojOCpm8NMCpkn"  # API Key
+  secret: "2G0ITCDo/8zUgHgEnQci47qj4R5rMJkqWhC11Kqknwdp6yHXzK7WQpSrliJhlYJPyIn8zRFu1bZcEQ+Mbi10+ov3b6CkcqQU3et3HRnLh3uTQqAjGbaL13JAMcv67yuLX3M7362BqSF9iL773vG/tNx5Yh5yypc103I6Vu4TzIcz+RR9z7g="  # API Secret
+  account: "7468442901"                                    # 계좌번호 (앞 8자리 + 뒤 2자리)
+  is_paper_trading: true                                   # 모의투자 여부 (true: 모의투자, false: 실전투자)
+  url_real: "https://openapi.koreainvestment.com:9443"    # 실전투자 서버 주소
+  url_paper: "https://openapivts.koreainvestment.com:29443"  # 모의투자 서버 주소
+
+# 디스코드 웹훅 설정
+discord:
+  webhook_url: "https://discord.com/api/webhooks/1335848253966778398/SLtYvQNqca_tL-OdLoKTwPYYZIRVHkeT2vAeerInYN0RGCzTQ-itRrmOZETlAYS6F1Mf"  # 디스코드 알림 웹훅 URL
+
+# 구글 스프레드시트 설정
+google_sheet:
+  spreadsheet_id: "1HMg-EpaE1E19m3gZPpid0JZoJr_LAy2aEscyzB8MA9Q"  # 구글 스프레드시트 ID
+  credentials_path: 'config/google_credentials.json'                # 구글 API 인증 파일 경로
+  sheets:
+    settings: "투자설정"    # 투자 설정 시트
+    holdings: "주식현황"    # 주식 현황 시트
+  coordinates:
+    # 투자설정 탭의 각 설정값 좌표
+    settings:
+      max_individual_stocks: "G4"    # 최대 개별 종목 수
+      max_pool_stocks: "G5"          # 최대 POOL 종목 수
+      min_cash_ratio: "G6"           # 최소 현금 보유 비율 (%)
+      market_open_ratio: "G8"        # 시가 매수 비율 (%)
+      market_close_ratio: "G9"       # 종가 매수 비율 (%)
+      stop_loss: "G14"               # 스탑로스 설정값 (%)
+      trailing_start: "G15"          # 트레일링 시작 설정값 (%)
+      trailing_stop: "G16"           # 트레일링 스탑 설정값 (%)
+      individual_stocks: "A21:G50"   # 개별 종목 목록 범위
+      pool_stocks: "A61:G80"         # POOL 종목 목록 범위
+    
+    # 주식현황 탭의 각 항목 좌표
+    holdings:
+      last_update: "C3"            # 마지막 업데이트 시간
+      error_message: "C4"          # 에러 메시지
+      stock_list: "A21:K50"        # 보유 종목 리스트 범위
+
+# 매매 설정
+trading:
+  market:
+    type: ['USA']                    # 거래 시장 설정 (KOR: 한국, USA: 미국)  type: ['KOR', 'USA']
+  kor_market_start: '0900'           # 한국 장 시작 시간 (HHMM)
+  kor_market_end: '1530'             # 한국 장 종료 시간 (HHMM)
+  usa_timezone: 'America/New_York'   # 미국 시장 시간대
+  usa_market_start: '0930'           # 미국 장 시작 시간 (현지 시간, HHMM)
+  usa_market_end: '1600'             # 미국 장 종료 시간 (현지 시간, HHMM)
+
+# 로깅 설정
+logging:
+  level: INFO                        # 로깅 레벨 (DEBUG/INFO/WARNING/ERROR/CRITICAL)
+  file_path: "logs/trading.log"      # 로그 파일 경로 
