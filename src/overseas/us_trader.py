@@ -109,7 +109,7 @@ class USTrader(BaseTrader):
             df = self.api.get_daily_price(stock_code, start_date, end_date)
             if df is not None and not df.empty:
                 df['clos'] = pd.to_numeric(df['clos'], errors='coerce')
-                ma = df['clos'].rolling(window=period).mean().iloc[-1]
+                ma = df['clos'].rolling(window=period).mean().iloc[-2]  # 전일자 ?? 이동평균
                 return float(ma) if not np.isnan(ma) else None
             return None
         except Exception as e:
@@ -278,7 +278,7 @@ class USTrader(BaseTrader):
                         if total_balance is None:
                             return
                         # 총자산금액을 환율로 나누어 달러로 환산
-                        total_assets = float(total_balance['output3']['tot_asst_amt']) / float(total_balance['output2'][0]['frst_bltn_exrt'])
+                        total_assets = float(total_balance['output3']['tot_asst_amt']) / float([x['frst_bltn_exrt'] for x in total_balance['output2'] if x['crcy_cd'] == 'USD'][0])
                         min_cash = total_assets * self.settings['min_cash_ratio']
                         
                         if available_cash <= min_cash:
@@ -287,10 +287,11 @@ class USTrader(BaseTrader):
                             return
                         
                         # 매수 가능 금액 계산
-                        max_budget = available_cash - min_cash
-                        buy_amount = max_budget * allocation_ratio
+                        # max_budget = available_cash - min_cash
+                        # buy_amount = max_budget * allocation_ratio
+                        buy_amount = total_assets * allocation_ratio
                         total_quantity = int(buy_amount / current_price)
-                        
+                                                
                         if total_quantity <= 0:
                             msg = f"매수 자금 부족 - {row['종목명']}({stock_code})"
                             msg += f"\n[시가 매수] 필요자금: ${current_price:.2f}/주 | 가용자금: ${buy_amount*self.settings['market_open_ratio']:.2f}"
@@ -378,6 +379,15 @@ class USTrader(BaseTrader):
                 self.logger.warning(f"매수 평균가(${entry_price:.2f})가 유효하지 않습니다: {name}")
                 return False
             
+            # 계좌 잔고 조회
+            total_balance = self._retry_api_call(self.api.get_total_balance)
+            if total_balance is None:
+                return False
+            
+            # 총자산금액을 환율로 나누어 달러로 환산
+            total_assets = float(total_balance['output3']['tot_asst_amt']) / float([x['frst_bltn_exrt'] for x in total_balance['output2'] if x['crcy_cd'] == 'USD'][0])
+            d2_deposit = float(total_balance['output3']['frcr_dncl_amt_2']) / float([x['frst_bltn_exrt'] for x in total_balance['output2'] if x['crcy_cd'] == 'USD'][0])
+            
             # 스탑로스 체크
             loss_pct = (current_price - entry_price) / entry_price * 100
             if loss_pct <= self.settings['stop_loss']:
@@ -387,7 +397,11 @@ class USTrader(BaseTrader):
                 # 스탑로스 매도
                 result = self._retry_api_call(self.api.order_stock, stock_code, "SELL", quantity)
                 if result:
-                    msg = f"스탑로스 매도 실행: {name} {quantity}주 (시장가) - 매수가 ${entry_price:.2f} / 현재가 ${current_price:.2f} / 손실률 {loss_pct:.2f}%"
+                    msg = f"스탑로스 매도 실행: {name} {quantity}주 (시장가)"
+                    msg += f"\n- 매도 사유: 손실률 {loss_pct:.2f}% (스탑로스 {self.settings['stop_loss']}% 도달)"
+                    msg += f"\n- 매도 금액: ${current_price * quantity:,.2f} (현재가 ${current_price:,.2f})"
+                    msg += f"\n- 매수 정보: 매수단가 ${entry_price:,.2f} / 평가손익 ${(current_price - entry_price) * quantity:,.2f}"
+                    msg += f"\n- 계좌 상태: 총평가금액 ${total_assets:,.2f} / D+2예수금 ${d2_deposit:,.2f}"
                     self.logger.info(msg)
                     self.add_daily_sold_stock(stock_code)  # 당일 매도 종목에 추가
                 return True
@@ -399,24 +413,42 @@ class USTrader(BaseTrader):
             
             # 현재가가 신고가인 경우 업데이트
             if current_price > highest_price:
-                # 이전 신고가 대비 1% 이상 상승했을 때만 메시지 출력
+                # 이전 신고가 대비 상승률 계산
                 price_change_pct = (current_price - highest_price) / highest_price * 100
+                profit_pct = (current_price - entry_price) / entry_price * 100
+                
                 holding['highest_price'] = current_price
-                if price_change_pct >= 1.0:  # 1% 이상 상승 시에만 메시지 출력
-                    msg = f"신고가 갱신 - {name}({stock_code}): ${highest_price:.2f} → ${current_price:.2f} (+{price_change_pct:.1f}%)"
-                    self.logger.info(msg)
+                
+                # 목표가 초과 시에만 메시지 출력
+                if profit_pct >= self.settings['trailing_start']:
+                    if price_change_pct >= 1.0:  # 1% 이상 상승 시
+                        msg = f"신고가 갱신 - {name}({stock_code})"
+                        msg += f"\n- 현재 수익률: +{profit_pct:.1f}% (목표가 {self.settings['trailing_start']}% 초과)"
+                        msg += f"\n- 고점 대비 상승: +{price_change_pct:.1f}% (이전 고점 ${highest_price:,.2f} → 현재가 ${current_price:,.2f})"
+                        msg += f"\n- 트레일링 스탑: 현재가 기준 {abs(self.settings['trailing_stop']):.1f}% 하락 시 매도"
+                        self.logger.info(msg)
             else:
                 # 목표가(trailing_start) 초과 여부 확인
                 profit_pct = (highest_price - entry_price) / entry_price * 100
                 if profit_pct >= self.settings['trailing_start']:  # 목표가 초과 시에만 트레일링 스탑 체크
                     drop_pct = (current_price - highest_price) / highest_price * 100
+                    
+                    # 1% 이상 하락 시 메시지 출력
+                    if drop_pct <= -1.0:
+                        msg = f"고점 대비 하락 - {name}({stock_code})"
+                        msg += f"\n- 현재 수익률: +{((current_price - entry_price) / entry_price * 100):.1f}%"
+                        msg += f"\n- 고점 대비 하락: {drop_pct:.1f}% (고점 ${highest_price:,.2f} → 현재가 ${current_price:,.2f})"
+                        msg += f"\n- 트레일링 스탑까지: {abs(self.settings['trailing_stop'] - drop_pct):.1f}% 더 하락하면 매도"
+                        self.logger.info(msg)
+                    
                     if drop_pct <= self.settings['trailing_stop']:
-                        trade_msg = f"트레일링 스탑 조건 성립 - {name}({stock_code}): 고점대비 하락률 {drop_pct:.2f}% <= {self.settings['trailing_stop']}% (목표가 {self.settings['trailing_start']}% 초과)"
-                        self.logger.info(trade_msg)
-                        
                         result = self._retry_api_call(self.api.order_stock, stock_code, "SELL", quantity)
                         if result:
-                            msg = f"트레일링 스탑 매도 실행: {name} {quantity}주 (시장가) - 최고가 ${highest_price:.2f} / 현재가 ${current_price:.2f} / 하락률 {drop_pct:.2f}%"
+                            msg = f"트레일링 스탑 매도 실행: {name} {quantity}주 (시장가)"
+                            msg += f"\n- 매도 사유: 고점 대비 하락률 {drop_pct:.2f}% (트레일링 스탑 {self.settings['trailing_stop']}% 도달)"
+                            msg += f"\n- 매도 금액: ${current_price * quantity:,.2f} (현재가 ${current_price:,.2f})"
+                            msg += f"\n- 매수 정보: 매수단가 ${entry_price:,.2f} / 평가손익 ${(current_price - entry_price) * quantity:,.2f}"
+                            msg += f"\n- 계좌 상태: 총평가금액 ${total_assets:,.2f} / D+2예수금 ${d2_deposit:,.2f}"
                             self.logger.info(msg)
                             self.add_daily_sold_stock(stock_code)  # 당일 매도 종목에 추가
                         return True

@@ -104,7 +104,7 @@ class KRTrader(BaseTrader):
             if 'stck_clpr' in df.columns:
                 df['종가'] = df['stck_clpr'].astype(float)
             
-            ma = df['종가'].rolling(window=period).mean().iloc[-1]
+            ma = df['종가'].rolling(window=period).mean().iloc[-2]  # 전일 종가의 이동평균값값
             return ma
         except Exception as e:
             self.logger.error(f"{period}일 이동평균 계산 실패 ({stock_code}): {str(e)}")
@@ -237,7 +237,15 @@ class KRTrader(BaseTrader):
                         
                         result = self._retry_api_call(self.kis_api.order_stock, stock_code, "SELL", quantity)
                         if result:
-                            msg = f"매도 주문 실행: {row['종목명']} {quantity}주 (시장가) - 이동평균 하향돌파"
+                            # 잔고 재조회
+                            new_balance = self.kis_api.get_account_balance()
+                            total_balance = float(new_balance['output2'][0]['tot_evlu_amt'])
+                            d2_deposit = float(new_balance['output2'][0]['dnca_tot_amt'])
+                            
+                            msg = f"매도 주문 실행: {row['종목명']} {quantity}주 (시장가)"
+                            msg += f"\n- 매도 사유: 이동평균 하향돌파"
+                            msg += f"\n- 매도 금액: {current_price * quantity:,.0f}원 (현재가 {current_price:,}원)"
+                            msg += f"\n- 계좌 상태: 총평가금액 {total_balance:,.0f}원 / D+2예수금 {d2_deposit:,.0f}원"
                             self.logger.info(msg)
                             self.add_daily_sold_stock(stock_code)  # 당일 매도 종목에 추가
             
@@ -247,7 +255,7 @@ class KRTrader(BaseTrader):
                 if should_buy and ma is not None:
                     # 당일 매도 종목 체크
                     if self.is_sold_today(stock_code):
-                        msg = f"당일 매도 종목 재매수 제한 - {row['종목명']}({stock_code})"
+                        msg = f"매수 조건 불충족 - {row['종목명']}({stock_code}): 당일 매도 종목 재매수 제한"
                         self.logger.info(msg)
                         return
 
@@ -256,7 +264,7 @@ class KRTrader(BaseTrader):
                     
                     # 최대 보유 종목 수 초과 체크
                     if current_holdings >= max_stocks:
-                        msg = f"최대 보유 종목 수({max_stocks}개) 초과로 매수 보류: {row['종목명']}"
+                        msg = f"매수 조건 불충족 - {row['종목명']}({stock_code}): 최대 보유 종목 수({max_stocks}개) 초과"
                         self.logger.info(msg)
                         return
                         
@@ -271,19 +279,21 @@ class KRTrader(BaseTrader):
                         min_cash = total_assets * self.settings['min_cash_ratio']
                         
                         if available_cash <= min_cash:
-                            msg = f"최소 현금 보유 비율({self.settings['min_cash_ratio']*100}%) 유지를 위해 매수 보류: {row['종목명']}"
+                            msg = f"매수 조건 불충족 - {row['종목명']}({stock_code}): 최소 현금 보유 비율({self.settings['min_cash_ratio']*100}%) 유지 필요"
+                            msg += f"\n- 필요 현금: {min_cash:,.0f}원"
+                            msg += f"\n- 가용 현금: {available_cash:,.0f}원"
                             self.logger.info(msg)
                             return
                         
                         # 매수 가능 금액 계산
-                        max_budget = available_cash - min_cash
-                        buy_amount = max_budget * allocation_ratio
+                        buy_amount = total_assets * allocation_ratio
                         total_quantity = int(buy_amount / current_price)
                         
                         if total_quantity <= 0:
-                            msg = f"매수 자금 부족 - {row['종목명']}({stock_code})"
-                            msg += f"\n[시가 매수] 필요자금: {current_price:,.0f}원/주 | 가용자금: {buy_amount*self.settings['market_open_ratio']:,.0f}원"
-                            msg += f"\n[종가 매수] 필요자금: {current_price:,.0f}원/주 | 가용자금: {buy_amount*self.settings['market_close_ratio']:,.0f}원"
+                            msg = f"매수 조건 불충족 - {row['종목명']}({stock_code}): 매수 자금 부족"
+                            msg += f"\n- 필요자금: {current_price:,.0f}원/주"
+                            msg += f"\n[시가 매수] 가용자금: {buy_amount*self.settings['market_open_ratio']:,.0f}원"
+                            msg += f"\n[종가 매수] 가용자금: {buy_amount*self.settings['market_close_ratio']:,.0f}원"
                             self.logger.info(msg)
                             return
                         
@@ -293,7 +303,15 @@ class KRTrader(BaseTrader):
                             if market_quantity > 0:
                                 result = self._retry_api_call(self.kis_api.order_stock, stock_code, "BUY", market_quantity)
                                 if result:
-                                    msg = f"매수 주문 실행: {row['종목명']} {market_quantity}주 (시장가) - 이동평균 상향돌파 (배분비율: {allocation_ratio*100}%)"
+                                    # 잔고 재조회
+                                    new_balance = self.kis_api.get_account_balance()
+                                    total_balance = float(new_balance['output2'][0]['tot_evlu_amt'])
+                                    d2_deposit = float(new_balance['output2'][0]['dnca_tot_amt'])
+                                    
+                                    msg = f"매수 주문 실행: {row['종목명']} {market_quantity}주 (시장가)"
+                                    msg += f"\n- 매수 사유: 이동평균 상향돌파 (배분비율: {allocation_ratio*100}%)"
+                                    msg += f"\n- 매수 금액: {current_price * market_quantity:,.0f}원 (현재가 {current_price:,}원)"
+                                    msg += f"\n- 계좌 상태: 총평가금액 {total_balance:,.0f}원 / D+2예수금 {d2_deposit:,.0f}원"
                                     self.logger.info(msg)
                                     # 종가 매수를 위한 정보 저장
                                     self.pending_close_orders.append({
@@ -303,6 +321,9 @@ class KRTrader(BaseTrader):
                                         'allocation_ratio': allocation_ratio
                                     })
                                     self.save_daily_orders()
+                else:
+                    msg = f"매수 조건 불충족 - {row['종목명']}({stock_code}): 전일 종가 {prev_close:,}원 <= {ma_period}일 이동평균 [{ma:,.0f}원]"
+                    self.logger.info(msg)
             
             # 종가 매수 처리
             elif is_market_close:
@@ -311,7 +332,7 @@ class KRTrader(BaseTrader):
                         # 현재 보유 수량 확인
                         holdings = [h for h in balance['output1'] if h['pdno'] == stock_code]
                         if not holdings or int(holdings[0].get('hldg_qty', 0)) <= 0:
-                            msg = f"종가 매수 취소 (보유 수량 없음): {order['stock_name']}"
+                            msg = f"종가 매수 취소 - {order['stock_name']}({stock_code}): 보유 수량 없음"
                             self.logger.info(msg)
                             self.pending_close_orders.remove(order)
                             self.save_daily_orders()
@@ -319,7 +340,15 @@ class KRTrader(BaseTrader):
                         
                         result = self._retry_api_call(self.kis_api.order_stock, stock_code, "BUY", order['quantity'], current_price)
                         if result:
-                            msg = f"종가 매수 주문 실행: {order['stock_name']} {order['quantity']}주 (지정가: {current_price:,}원) - 이동평균 상향돌파 잔여수량"
+                            # 잔고 재조회
+                            new_balance = self.kis_api.get_account_balance()
+                            total_balance = float(new_balance['output2'][0]['tot_evlu_amt'])
+                            d2_deposit = float(new_balance['output2'][0]['dnca_tot_amt'])
+                            
+                            msg = f"종가 매수 주문 실행: {order['stock_name']} {order['quantity']}주 (지정가: {current_price:,}원)"
+                            msg += f"\n- 매수 사유: 이동평균 상향돌파 잔여수량"
+                            msg += f"\n- 매수 금액: {current_price * order['quantity']:,.0f}원"
+                            msg += f"\n- 계좌 상태: 총평가금액 {total_balance:,.0f}원 / D+2예수금 {d2_deposit:,.0f}원"
                             self.logger.info(msg)
                         self.pending_close_orders.remove(order)
                         self.save_daily_orders()
@@ -372,7 +401,16 @@ class KRTrader(BaseTrader):
                 # 스탑로스 매도
                 result = self._retry_api_call(self.kis_api.order_stock, stock_code, "SELL", quantity)
                 if result:
-                    msg = f"스탑로스 매도 실행: {name} {quantity}주 (시장가) - 매수가 {entry_price:,}원 / 현재가 {current_price:,}원 / 손실률 {loss_pct:.2f}%"
+                    # 잔고 재조회
+                    new_balance = self.kis_api.get_account_balance()
+                    total_balance = float(new_balance['output2'][0]['tot_evlu_amt'])
+                    d2_deposit = float(new_balance['output2'][0]['dnca_tot_amt'])
+                    
+                    msg = f"스탑로스 매도 실행: {name} {quantity}주 (시장가)"
+                    msg += f"\n- 매도 사유: 손실률 {loss_pct:.2f}% (스탑로스 {self.settings['stop_loss']}% 도달)"
+                    msg += f"\n- 매도 금액: {current_price * quantity:,.0f}원 (현재가 {current_price:,}원)"
+                    msg += f"\n- 매수 정보: 매수단가 {entry_price:,}원 / 평가손익 {(current_price - entry_price) * quantity:,.0f}원"
+                    msg += f"\n- 계좌 상태: 총평가금액 {total_balance:,.0f}원 / D+2예수금 {d2_deposit:,.0f}원"
                     self.logger.info(msg)
                     self.add_daily_sold_stock(stock_code)  # 당일 매도 종목에 추가
                 return True
@@ -384,24 +422,49 @@ class KRTrader(BaseTrader):
             
             # 현재가가 신고가인 경우 업데이트
             if current_price > highest_price:
-                # 이전 신고가 대비 1% 이상 상승했을 때만 메시지 출력
+                # 이전 신고가 대비 상승률 계산
                 price_change_pct = (current_price - highest_price) / highest_price * 100
+                profit_pct = (current_price - entry_price) / entry_price * 100
                 holding['highest_price'] = current_price
-                if price_change_pct >= 1.0:  # 1% 이상 상승 시에만 메시지 출력
-                    msg = f"신고가 갱신 - {name}({stock_code}): {highest_price:,}원 → {current_price:,}원 (+{price_change_pct:.1f}%)"
-                    self.logger.info(msg)
+                
+                # 목표가 초과 시에만 메시지 출력
+                if profit_pct >= self.settings['trailing_start']:
+                    if price_change_pct >= 1.0:  # 1% 이상 상승 시
+                        msg = f"신고가 갱신 - {name}({stock_code})"
+                        msg += f"\n- 현재 수익률: +{profit_pct:.1f}% (목표가 {self.settings['trailing_start']}% 초과)"
+                        msg += f"\n- 고점 대비 상승: +{price_change_pct:.1f}% (이전 고점 {highest_price:,}원 → 현재가 {current_price:,}원)"
+                        msg += f"\n- 트레일링 스탑: 현재가 기준 {abs(self.settings['trailing_stop']):.1f}% 하락 시 매도"
+                        self.logger.info(msg)
             else:
                 # 목표가(trailing_start) 초과 여부 확인
                 profit_pct = (highest_price - entry_price) / entry_price * 100
                 if profit_pct >= self.settings['trailing_start']:  # 목표가 초과 시에만 트레일링 스탑 체크
                     drop_pct = (current_price - highest_price) / highest_price * 100
+                    
+                    # 1% 이상 하락 시 메시지 출력
+                    if drop_pct <= -1.0:
+                        msg = f"고점 대비 하락 - {name}({stock_code})"
+                        msg += f"\n- 현재 수익률: +{((current_price - entry_price) / entry_price * 100):.1f}%"
+                        msg += f"\n- 고점 대비 하락: {drop_pct:.1f}% (고점 {highest_price:,}원 → 현재가 {current_price:,}원)"
+                        msg += f"\n- 트레일링 스탑: {abs(self.settings['trailing_stop'] - drop_pct):.1f}% 더 하락하면 매도"
+                        self.logger.info(msg)
+                    
                     if drop_pct <= self.settings['trailing_stop']:
-                        trade_msg = f"트레일링 스탑 조건 성립 - {name}({stock_code}): 고점대비 하락률 {drop_pct:.2f}% <= {self.settings['trailing_stop']}% (목표가 {self.settings['trailing_start']}% 초과)"
+                        trade_msg = f"트레일링 스탑 조건 성립 - {name}({stock_code}): 고점대비 하락률 {drop_pct:.2f}% <= {self.settings['trailing_stop']}%"
                         self.logger.info(trade_msg)
                         
                         result = self._retry_api_call(self.kis_api.order_stock, stock_code, "SELL", quantity)
                         if result:
-                            msg = f"트레일링 스탑 매도 실행: {name} {quantity}주 (시장가) - 최고가 {highest_price:,}원 / 현재가 {current_price:,}원 / 하락률 {drop_pct:.2f}%"
+                            # 잔고 재조회
+                            new_balance = self.kis_api.get_account_balance()
+                            total_balance = float(new_balance['output2'][0]['tot_evlu_amt'])
+                            d2_deposit = float(new_balance['output2'][0]['dnca_tot_amt'])
+                            
+                            msg = f"트레일링 스탑 매도 실행: {name} {quantity}주 (시장가)"
+                            msg += f"\n- 매도 사유: 고점 대비 하락률 {drop_pct:.2f}% (트레일링 스탑 {self.settings['trailing_stop']}% 도달)"
+                            msg += f"\n- 매도 금액: {current_price * quantity:,.0f}원 (현재가 {current_price:,}원)"
+                            msg += f"\n- 매수 정보: 매수단가 {entry_price:,}원 / 평가손익 {(current_price - entry_price) * quantity:,.0f}원"
+                            msg += f"\n- 계좌 상태: 총평가금액 {total_balance:,.0f}원 / D+2예수금 {d2_deposit:,.0f}원"
                             self.logger.info(msg)
                             self.add_daily_sold_stock(stock_code)  # 당일 매도 종목에 추가
                         return True

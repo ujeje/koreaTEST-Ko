@@ -33,7 +33,10 @@ class BaseTrader:
         self.market_close_executed = False
         self.execution_date = None
         self.last_api_call = 0
-        self.api_call_interval = 0.2
+        
+        # 실전/모의투자에 따른 API 호출 간격 설정
+        self.is_paper_trading = self.config['api']['is_paper_trading']
+        self.api_call_interval = 0.5 if self.is_paper_trading else 0.2  # 모의투자: 2건/초, 실전투자: 5건/초
         self.max_retries = 3
         self.daily_orders_file = f'data/daily_orders_{market_type.lower()}.json'
         self.daily_sold_stocks_file = f'data/daily_sold_stocks_{market_type.lower()}.json'
@@ -60,21 +63,35 @@ class BaseTrader:
         self.last_api_call = time.time()
 
     def _retry_api_call(self, func, *args, **kwargs):
-        """API 호출을 재시도합니다."""
+        """API 호출을 재시도합니다.
+        
+        Args:
+            func: 호출할 API 함수
+            *args: API 함수에 전달할 위치 인자
+            **kwargs: API 함수에 전달할 키워드 인자
+            
+        Returns:
+            API 호출 결과
+        """
         for attempt in range(self.max_retries):
             try:
-                self._wait_for_api_call()
+                self._wait_for_api_call()  # API 호출 전 대기
                 result = func(*args, **kwargs)
-                if result is not None:
-                    return result
+                
+                # API 응답 확인
+                if isinstance(result, dict) and result.get('rt_cd') == '1':
+                    error_msg = result.get('msg1', '알 수 없는 오류가 발생했습니다.')
+                    if 'EGW00201' in str(result):  # 초당 거래건수 초과 오류
+                        time.sleep(self.api_call_interval * 2)  # 추가 대기 시간
+                        continue
+                    raise Exception(error_msg)
+                    
+                return result
+                
             except Exception as e:
-                if "초당 거래건수를 초과" in str(e):
-                    wait_time = (attempt + 1) * self.api_call_interval
-                    logging.warning(f"API 호출 제한 도달. {wait_time}초 대기 후 재시도 ({attempt + 1}/{self.max_retries})")
-                    time.sleep(wait_time)
-                    continue
-                raise
-        return None
+                if attempt == self.max_retries - 1:  # 마지막 시도
+                    raise Exception(f"API 호출 실패 (최대 재시도 횟수 초과): {str(e)}")
+                time.sleep(self.api_call_interval * (attempt + 1))  # 점진적 대기 시간 증가
     
     def load_settings(self) -> None:
         """구글 스프레드시트에서 설정을 로드합니다."""

@@ -26,9 +26,19 @@ class TokenManager:
             with open(config_path, 'r', encoding='utf-8') as f:
                 self.config = yaml.safe_load(f)
             
-            self.base_url = self.config['api']['url_base']
-            self.api_key = self.config['api']['key']
-            self.api_secret = self.config['api']['secret']
+            # 모의투자 여부에 따라 설정
+            self.is_paper_trading = self.config['api']['is_paper_trading']
+            if self.is_paper_trading:
+                self.base_url = self.config['api']['paper']['url']
+                self.api_key = self.config['api']['paper']['key']
+                self.api_secret = self.config['api']['paper']['secret']
+                self.account_no = self.config['api']['paper']['account']
+            else:
+                self.base_url = self.config['api']['real']['url']
+                self.api_key = self.config['api']['real']['key']
+                self.api_secret = self.config['api']['real']['secret']
+                self.account_no = self.config['api']['real']['account']
+            
             self.access_token = None
             self.token_expired_time = None
             self.last_token_request = 0

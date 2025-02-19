@@ -42,65 +42,61 @@ class GoogleSheetManager:
         # 디스코드 웹훅 URL
         self.discord_webhook_url = self.config['discord']['webhook_url']
     
-    def get_settings(self) -> dict:
+    def get_settings(self, market_type: str = "KOR") -> dict:
         """투자 설정을 가져옵니다."""
         try:
             self.logger.info("설정 시트에서 설정값을 로드합니다...")
             
-            # 최대 종목 수 설정
-            max_individual_stocks = self.sheet.values().get(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"{self.sheets['settings']}!{self.coordinates['settings']['max_individual_stocks']}"
-            ).execute().get('values', [[0]])[0][0]
+            # 시장별 설정 시트 선택
+            settings_sheet = self.sheets['settings_kr'] if market_type == "KOR" else self.sheets['settings_us']
             
-            max_pool_stocks = self.sheet.values().get(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"{self.sheets['settings']}!{self.coordinates['settings']['max_pool_stocks']}"
-            ).execute().get('values', [[0]])[0][0]
+            # 모든 설정값을 한 번에 조회
+            ranges = [
+                f"{settings_sheet}!{self.coordinates['settings']['max_individual_stocks']}",
+                f"{settings_sheet}!{self.coordinates['settings']['max_pool_stocks']}",
+                f"{settings_sheet}!{self.coordinates['settings']['min_cash_ratio']}",
+                f"{settings_sheet}!{self.coordinates['settings']['market_open_ratio']}",
+                f"{settings_sheet}!{self.coordinates['settings']['market_close_ratio']}",
+                f"{settings_sheet}!{self.coordinates['settings']['stop_loss']}",
+                f"{settings_sheet}!{self.coordinates['settings']['trailing_start']}",
+                f"{settings_sheet}!{self.coordinates['settings']['trailing_stop']}"
+            ]
             
-            # 현금 보유 비율
-            min_cash_ratio = self.sheet.values().get(
+            result = self.sheet.values().batchGet(
                 spreadsheetId=self.spreadsheet_id,
-                range=f"{self.sheets['settings']}!{self.coordinates['settings']['min_cash_ratio']}"
-            ).execute().get('values', [[0]])[0][0]
+                ranges=ranges
+            ).execute()
             
-            # 매수 타이밍 비율
-            market_open_ratio = self.sheet.values().get(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"{self.sheets['settings']}!{self.coordinates['settings']['market_open_ratio']}"
-            ).execute().get('values', [[0]])[0][0]
+            # 결과값 추출
+            values = []
+            for value_range in result.get('valueRanges', []):
+                value = value_range.get('values', [[0]])[0][0]
+                values.append(value)
             
-            market_close_ratio = self.sheet.values().get(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"{self.sheets['settings']}!{self.coordinates['settings']['market_close_ratio']}"
-            ).execute().get('values', [[0]])[0][0]
-            
-            # 스탑로스, 트레일링 설정값
-            stop_loss = self.sheet.values().get(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"{self.sheets['settings']}!{self.coordinates['settings']['stop_loss']}"
-            ).execute().get('values', [[0]])[0][0]
-            
-            trailing_start = self.sheet.values().get(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"{self.sheets['settings']}!{self.coordinates['settings']['trailing_start']}"
-            ).execute().get('values', [[0]])[0][0]
-            
-            trailing_stop = self.sheet.values().get(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"{self.sheets['settings']}!{self.coordinates['settings']['trailing_stop']}"
-            ).execute().get('values', [[0]])[0][0]
+            # 값이 8개가 아닌 경우 기본값 사용
+            if len(values) != 8:
+                self.logger.warning("일부 설정값이 누락되었습니다. 기본값을 사용합니다.")
+                return {
+                    'max_individual_stocks': 5,
+                    'max_pool_stocks': 3,
+                    'min_cash_ratio': 0.1,
+                    'market_open_ratio': 0.3,
+                    'market_close_ratio': 0.7,
+                    'stop_loss': -5.0,
+                    'trailing_start': 5.0,
+                    'trailing_stop': -3.0
+                }
             
             # 스탑로스 관련 설정값은 입력된 부호 그대로 사용 (음수/양수)
             return {
-                'max_individual_stocks': int(float(max_individual_stocks)) if max_individual_stocks else 5,
-                'max_pool_stocks': int(float(max_pool_stocks)) if max_pool_stocks else 3,
-                'min_cash_ratio': float(min_cash_ratio) / 100 if min_cash_ratio else 0.1,
-                'market_open_ratio': float(market_open_ratio) / 100 if market_open_ratio else 0.3,
-                'market_close_ratio': float(market_close_ratio) / 100 if market_close_ratio else 0.7,
-                'stop_loss': float(stop_loss) if stop_loss else -5.0,
-                'trailing_start': float(trailing_start) if trailing_start else 5.0,
-                'trailing_stop': float(trailing_stop) if trailing_stop else -3.0
+                'max_individual_stocks': int(float(values[0])) if values[0] else 5,
+                'max_pool_stocks': int(float(values[1])) if values[1] else 3,
+                'min_cash_ratio': float(values[2]) / 100 if values[2] else 0.1,
+                'market_open_ratio': float(values[3]) / 100 if values[3] else 0.3,
+                'market_close_ratio': float(values[4]) / 100 if values[4] else 0.7,
+                'stop_loss': float(values[5]) if values[5] else -5.0,
+                'trailing_start': float(values[6]) if values[6] else 5.0,
+                'trailing_stop': float(values[7]) if values[7] else -3.0
             }
             
         except Exception as e:
@@ -183,9 +179,13 @@ class GoogleSheetManager:
         """개별 종목 정보를 가져옵니다."""
         try:
             self.logger.info("개별 종목 시트에서 종목 정보를 로드합니다...")
+            
+            # 시장별 설정 시트 선택
+            settings_sheet = self.sheets['settings_kr'] if market_type == "KOR" else self.sheets['settings_us']
+            
             result = self.sheet.values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range=f"{self.sheets['settings']}!{self.coordinates['settings']['individual_stocks']}"
+                range=f"{settings_sheet}!{self.coordinates['settings']['individual_stocks']}"
             ).execute()
             
             values = result.get('values', [])
@@ -248,9 +248,13 @@ class GoogleSheetManager:
         """POOL 종목 정보를 가져옵니다."""
         try:
             self.logger.info("POOL 종목 시트에서 종목 정보를 로드합니다...")
+            
+            # 시장별 설정 시트 선택
+            settings_sheet = self.sheets['settings_kr'] if market_type == "KOR" else self.sheets['settings_us']
+            
             result = self.sheet.values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range=f"{self.sheets['settings']}!{self.coordinates['settings']['pool_stocks']}"
+                range=f"{settings_sheet}!{self.coordinates['settings']['pool_stocks']}"
             ).execute()
             
             values = result.get('values', [])

@@ -1,11 +1,20 @@
 # 한국투자증권 API 설정
 api:
-  key: "PSoCplC0bjmBXIK1JV3DL42ojOCpm8NMCpkn"  # API Key
-  secret: "2G0ITCDo/8zUgHgEnQci47qj4R5rMJkqWhC11Kqknwdp6yHXzK7WQpSrliJhlYJPyIn8zRFu1bZcEQ+Mbi10+ov3b6CkcqQU3et3HRnLh3uTQqAjGbaL13JAMcv67yuLX3M7362BqSF9iL773vG/tNx5Yh5yypc103I6Vu4TzIcz+RR9z7g="  # API Secret
-  account: "7468442901"                                    # 계좌번호 (앞 8자리 + 뒤 2자리)
   is_paper_trading: true                                   # 모의투자 여부 (true: 모의투자, false: 실전투자)
-  url_real: "https://openapi.koreainvestment.com:9443"    # 실전투자 서버 주소
-  url_paper: "https://openapivts.koreainvestment.com:29443"  # 모의투자 서버 주소
+  
+  # 실전투자 설정
+  real:
+    key: "PSoCplC0bjmBXIK1JV3DL42ojOCpm8NMCpkn"         # 실전투자 API Key
+    secret: "2G0ITCDo/8zUgHgEnQci47qj4R5rMJkqWhC11Kqknwdp6yHXzK7WQpSrliJhlYJPyIn8zRFu1bZcEQ+Mbi10+ov3b6CkcqQU3et3HRnLh3uTQqAjGbaL13JAMcv67yuLX3M7362BqSF9iL773vG/tNx5Yh5yypc103I6Vu4TzIcz+RR9z7g="  # 실전투자 API Secret
+    account: "7468442901"                                 # 실전투자 계좌번호
+    url: "https://openapi.koreainvestment.com:9443"      # 실전투자 서버 주소
+  
+  # 모의투자 설정
+  paper:
+    key: "PS1x5feAdA4zTACWQer6eqvkDPhoNtYcUsUE"         # 모의투자 API Key
+    secret: "t+WN01I0xZHfwMTh7telWmjslJnJo6dU78tHiL9m5/YOmJTj+Dz09ltfDsHUnlGSmUOJOClSbOa6tcfI6TNhDyumY/4PqG/9VSRvqoW67HoQjHr0D4x6urkQGmMOgAzUcoaAll9dIMUjPgPV0RUzHmdhlpH9Lo39NPHgkpw7KV+5Hbz39co="  # 모의투자 API Secret
+    account: "5012472201"                                 # 모의투자 계좌번호
+    url: "https://openapivts.koreainvestment.com:29443"  # 모의투자 서버 주소
 
 # 디스코드 웹훅 설정
 discord:
@@ -16,10 +25,11 @@ google_sheet:
   spreadsheet_id: "1HMg-EpaE1E19m3gZPpid0JZoJr_LAy2aEscyzB8MA9Q"  # 구글 스프레드시트 ID
   credentials_path: 'config/google_credentials.json'                # 구글 API 인증 파일 경로
   sheets:
-    settings: "투자설정"    # 투자 설정 시트
-    holdings: "주식현황"    # 주식 현황 시트
+    settings_kr: "투자설정[국장]"    # 국내 투자 설정 시트
+    settings_us: "투자설정[미장]"    # 미국 투자 설정 시트
+    holdings: "주식현황"            # 주식 현황 시트
   coordinates:
-    # 투자설정 탭의 각 설정값 좌표
+    # 투자설정 탭의 각 설정값 좌표 (국내/미국 공통)
     settings:
       max_individual_stocks: "G4"    # 최대 개별 종목 수
       max_pool_stocks: "G5"          # 최대 POOL 종목 수
@@ -41,7 +51,7 @@ google_sheet:
 # 매매 설정
 trading:
   market:
-    type: ['USA']                    # 거래 시장 설정 (KOR: 한국, USA: 미국)  type: ['KOR', 'USA']
+    type: ['KOR']                    # 거래 시장 설정 (KOR: 한국, USA: 미국)  type: ['KOR', 'USA']
   kor_market_start: '0900'           # 한국 장 시작 시간 (HHMM)
   kor_market_end: '1530'             # 한국 장 종료 시간 (HHMM)
   usa_timezone: 'America/New_York'   # 미국 시장 시간대

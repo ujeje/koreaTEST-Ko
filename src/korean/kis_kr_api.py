@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional
 import pandas as pd
 from src.utils.token_manager import TokenManager
+import time
 
 class KISKRAPIManager:
     """한국투자증권 국내주식 API 매니저
@@ -25,14 +26,19 @@ class KISKRAPIManager:
         with open(config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
         
-        # 모의투자 여부에 따라 base_url 설정
+        # 모의투자 여부에 따라 설정
         self.is_paper_trading = self.config['api']['is_paper_trading']
-        self.base_url = self.config['api']['url_paper'] if self.is_paper_trading else self.config['api']['url_real']
+        if self.is_paper_trading:
+            self.base_url = self.config['api']['paper']['url']
+            self.api_key = self.config['api']['paper']['key']
+            self.api_secret = self.config['api']['paper']['secret']
+            self.account_no = self.config['api']['paper']['account']
+        else:
+            self.base_url = self.config['api']['real']['url']
+            self.api_key = self.config['api']['real']['key']
+            self.api_secret = self.config['api']['real']['secret']
+            self.account_no = self.config['api']['real']['account']
         
-        # API 인증 정보 설정
-        self.api_key = self.config['api']['key']
-        self.api_secret = self.config['api']['secret']
-        self.account_no = self.config['api']['account']
         self.token_manager = TokenManager(config_path)
     
     def _check_token(self) -> str:
@@ -58,6 +64,8 @@ class KISKRAPIManager:
         }
         
         response = requests.get(url, headers=headers, params=params)
+        time.sleep(1.0 if self.is_paper_trading else 0.5)  # 모의투자: 1초, 실전투자: 0.5초
+        
         if response.status_code == 200:
             return response.json()
         else:
@@ -70,13 +78,27 @@ class KISKRAPIManager:
         Returns:
             Dict: 계좌 잔고 정보를 담은 딕셔너리
                 - output1: 보유 종목 리스트
+                    - pdno: 종목코드
+                    - prdt_name: 종목명
+                    - hldg_qty: 보유수량
+                    - ord_psbl_qty: 주문가능수량
+                    - pchs_avg_pric: 매입평균가격
+                    - pchs_amt: 매입금액
+                    - prpr: 현재가
+                    - evlu_amt: 평가금액
+                    - evlu_pfls_amt: 평가손익금액
+                    - evlu_pfls_rt: 평가손익율
                 - output2: 계좌 요약 정보
+                    - dnca_tot_amt: 예수금총금액
+                    - nxdy_excc_amt: D+1 예수금
+                    - prvs_rcdl_excc_amt: D+2 예수금
+                    - tot_evlu_amt: 총평가금액
         """
         access_token = self._check_token()
         
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
         headers = {
-            "Content-Type": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
             "authorization": f"Bearer {access_token}",
             "appkey": self.api_key,
             "appsecret": self.api_secret,
@@ -86,22 +108,82 @@ class KISKRAPIManager:
         params = {
             "CANO": self.account_no[:8],
             "ACNT_PRDT_CD": self.account_no[8:],
-            "AFHR_FLPR_YN": "N",
-            "OFL_YN": "",
-            "INQR_DVSN": "02",
-            "UNPR_DVSN": "01",
-            "FUND_STTL_ICLD_YN": "N",
-            "FNCG_AMT_AUTO_RDPT_YN": "N",
-            "PRCS_DVSN": "01",
-            "CTX_AREA_FK100": "",
-            "CTX_AREA_NK100": ""
+            "AFHR_FLPR_YN": "N",           # 시간외단일가여부
+            "OFL_YN": "",                  # 오프라인여부
+            "INQR_DVSN": "02",             # 조회구분 (02: 종목별)
+            "UNPR_DVSN": "01",             # 단가구분
+            "FUND_STTL_ICLD_YN": "N",      # 펀드결제분포함여부
+            "FNCG_AMT_AUTO_RDPT_YN": "N",  # 융자금액자동상환여부
+            "PRCS_DVSN": "01",             # 처리구분 (01: 전일매매미포함)
+            "CTX_AREA_FK100": "",          # 연속조회검색조건
+            "CTX_AREA_NK100": ""           # 연속조회키
         }
         
         response = requests.get(url, headers=headers, params=params)
+        time.sleep(1.0 if self.is_paper_trading else 0.5)  # 모의투자: 1초, 실전투자: 0.5초
+        
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            if data['rt_cd'] == '0':  # 정상 응답
+                # 연속조회 필요 여부 확인
+                tr_cont = data.get('tr_cont', 'D')
+                
+                # 연속 조회가 필요한 경우 (tr_cont가 M인 경우)
+                if tr_cont == 'M':
+                    next_data = self._get_remaining_balance(
+                        url, headers, params,
+                        data['ctx_area_fk100'],
+                        data['ctx_area_nk100']
+                    )
+                    if next_data:
+                        # output1(보유종목) 리스트 합치기
+                        data['output1'].extend(next_data.get('output1', []))
+                        # output2(계좌잔고) 정보는 마지막 것으로 업데이트
+                        data['output2'] = next_data.get('output2', data['output2'])
+                
+                return data
+            else:
+                logging.error(f"잔고 조회 실패: {data['msg1']}")
+                return None
         else:
             logging.error(f"잔고 조회 실패: {response.text}")
+            return None
+    
+    def _get_remaining_balance(self, url: str, headers: dict, params: dict, ctx_area_fk100: str, ctx_area_nk100: str) -> Optional[Dict]:
+        """연속 조회가 필요한 경우 나머지 잔고를 조회합니다."""
+        try:
+            # 연속조회 파라미터 설정
+            params['CTX_AREA_FK100'] = ctx_area_fk100
+            params['CTX_AREA_NK100'] = ctx_area_nk100
+            
+            response = requests.get(url, headers=headers, params=params)
+            time.sleep(1.0 if self.is_paper_trading else 0.5)  # 모의투자: 1초, 실전투자: 0.5초
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data['rt_cd'] == '0':  # 정상 응답
+                    # 더 연속 조회가 필요한 경우 재귀 호출
+                    if data.get('tr_cont') == 'M':
+                        next_data = self._get_remaining_balance(
+                            url, headers, params,
+                            data['ctx_area_fk100'],
+                            data['ctx_area_nk100']
+                        )
+                        if next_data:
+                            # output1(보유종목) 리스트 합치기
+                            data['output1'].extend(next_data.get('output1', []))
+                            # output2(계좌잔고) 정보는 마지막 것으로 업데이트
+                            data['output2'] = next_data.get('output2', data['output2'])
+                    return data
+                else:
+                    logging.error(f"연속 잔고 조회 실패: {data['msg1']}")
+                    return None
+            else:
+                logging.error(f"연속 잔고 조회 실패: {response.text}")
+                return None
+                
+        except Exception as e:
+            logging.error(f"연속 잔고 조회 중 오류 발생: {str(e)}")
             return None
     
     def get_buyable_amount(self, stock_code: str) -> Optional[Dict]:
@@ -113,14 +195,17 @@ class KISKRAPIManager:
         Returns:
             Dict: 매수가능금액 정보를 담은 딕셔너리
                 - output: 매수가능 정보
-                    - nrcvb_buy_amt: 매수가능금액
-                    - max_buy_qty: 최대매수가능수량
+                    - nrcvb_buy_amt: 미수없는매수금액
+                    - nrcvb_buy_qty: 미수없는매수수량
+                    - max_buy_amt: 최대매수금액
+                    - max_buy_qty: 최대매수수량
+                    - ord_psbl_cash: 주문가능현금
         """
         access_token = self._check_token()
         
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-psbl-order"
         headers = {
-            "Content-Type": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
             "authorization": f"Bearer {access_token}",
             "appkey": self.api_key,
             "appsecret": self.api_secret,
@@ -132,14 +217,21 @@ class KISKRAPIManager:
             "ACNT_PRDT_CD": self.account_no[8:],
             "PDNO": stock_code,
             "ORD_UNPR": "0",
-            "ORD_DVSN": "01",  # 01: 시장가
-            "CMA_EVLU_AMT_ICLD_YN": "N",
-            "OVRS_ICLD_YN": "N"
+            "ORD_DVSN": "01",  # 01: 시장가 (종목증거금율 반영)
+            "CMA_EVLU_AMT_ICLD_YN": "N",  # CMA 평가금액 포함안함
+            "OVRS_ICLD_YN": "N"  # 해외포함안함
         }
         
         response = requests.get(url, headers=headers, params=params)
+        time.sleep(1.0 if self.is_paper_trading else 0.5)  # 모의투자: 1초, 실전투자: 0.5초
+        
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            if data['rt_cd'] == '0':  # 정상 응답
+                return data
+            else:
+                logging.error(f"매수가능금액 조회 실패: {data['msg1']}")
+                return None
         else:
             logging.error(f"매수가능금액 조회 실패: {response.text}")
             return None
@@ -155,6 +247,10 @@ class KISKRAPIManager:
             
         Returns:
             Dict: 주문 결과를 담은 딕셔너리
+                - output: 주문 결과 정보
+                    - KRX_FWDG_ORD_ORGNO: 한국거래소전송주문조직번호
+                    - ODNO: 주문번호
+                    - ORD_TMD: 주문시각 (HHMMSS)
         """
         access_token = self._check_token()
         
@@ -167,7 +263,7 @@ class KISKRAPIManager:
             tr_id = "TTTC0802U" if order_type == "BUY" else "TTTC0801U"
             
         headers = {
-            "Content-Type": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
             "authorization": f"Bearer {access_token}",
             "appkey": self.api_key,
             "appsecret": self.api_secret,
@@ -180,44 +276,84 @@ class KISKRAPIManager:
             "PDNO": stock_code,
             "ORD_DVSN": "00" if price > 0 else "01",  # 00: 지정가, 01: 시장가
             "ORD_QTY": str(quantity),
-            "ORD_UNPR": str(price) if price > 0 else "0",
+            "ORD_UNPR": str(price) if price > 0 else "0",  # 시장가 주문 시 0으로 설정
+            "ALGO_NO": ""  # 알고리즘 번호 (미사용)
         }
         
         response = requests.post(url, headers=headers, data=json.dumps(data))
+        time.sleep(1.0 if self.is_paper_trading else 0.5)  # 모의투자: 1초, 실전투자: 0.5초
+        
         if response.status_code == 200:
-            return response.json()
+            result = response.json()
+            if result['rt_cd'] == '0':  # 정상 응답
+                return result
+            else:
+                logging.error(f"주문 실패: {result['msg1']}")
+                return None
         else:
             logging.error(f"주문 실패: {response.text}")
             return None
     
     def get_daily_price(self, stock_code: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
-        """일별 주가 정보를 조회합니다."""
-        access_token = self._check_token()
+        """일별 주가 정보를 조회합니다.
         
-        url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
-        headers = {
-            "Content-Type": "application/json",
-            "authorization": f"Bearer {access_token}",
-            "appkey": self.api_key,
-            "appsecret": self.api_secret,
-            "tr_id": "FHKST01010400"
-        }
-        
-        params = {
-            "FID_COND_MRKT_DIV_CODE": "J",
-            "FID_INPUT_ISCD": stock_code,
-            "FID_PERIOD_DIV_CODE": "D",
-            "FID_ORG_ADJ_PRC": "1",
-            "FID_INPUT_DATE_1": start_date,
-            "FID_INPUT_DATE_2": end_date
-        }
-        
-        response = requests.get(url, headers=headers, params=params)
-        if response.status_code == 200:
-            data = response.json()
-            if 'output' in data:
-                return pd.DataFrame(data['output'])
+        Args:
+            stock_code (str): 종목코드
+            start_date (str): 조회 시작일자 (YYYYMMDD)
+            end_date (str): 조회 종료일자 (YYYYMMDD)
+            
+        Returns:
+            Optional[pd.DataFrame]: 일별 주가 데이터프레임
+        """
+        try:
+            access_token = self._check_token()
+            
+            url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+            headers = {
+                "Content-Type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {access_token}",
+                "appkey": self.api_key,
+                "appsecret": self.api_secret,
+                "tr_id": "FHKST03010100"
+            }
+            
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": stock_code,
+                "FID_INPUT_DATE_1": start_date,
+                "FID_INPUT_DATE_2": end_date,
+                "FID_PERIOD_DIV_CODE": "D",  # D:일봉
+                "FID_ORG_ADJ_PRC": "0"       # 수정주가 여부 (0: 수정주가, 1: 원주가)
+            }
+            
+            # API 호출 후 대기
+            response = requests.get(url, headers=headers, params=params)
+            time.sleep(1.0 if self.is_paper_trading else 0.5)  # 모의투자: 1초, 실전투자: 0.5초
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data['rt_cd'] == '0' and 'output2' in data:  # 정상 응답 확인
+                    df = pd.DataFrame(data['output2'])
+                    # 날짜(stck_bsop_date) 기준으로 오름차순 정렬 (과거 -> 최근)
+                    df['stck_bsop_date'] = pd.to_datetime(df['stck_bsop_date'], format='%Y%m%d')
+                    df = df.sort_values('stck_bsop_date', ascending=True).reset_index(drop=True)
+                    
+                    # 컬럼명 매핑 (기존 코드와의 호환성을 위해)
+                    df['종가'] = df['stck_clpr'].astype(float)
+                    df['시가'] = df['stck_oprc'].astype(float)
+                    df['고가'] = df['stck_hgpr'].astype(float)
+                    df['저가'] = df['stck_lwpr'].astype(float)
+                    df['거래량'] = df['acml_vol'].astype(float)
+                    df['거래대금'] = df['acml_tr_pbmn'].astype(float)
+                    
+                    return df
+                else:
+                    error_msg = data.get('msg1', '알 수 없는 오류가 발생했습니다.')
+                    logging.error(f"일별 주가 조회 실패: {error_msg}")
+            else:
+                logging.error(f"일별 주가 조회 실패: {response.text}")
             return None
-        else:
-            logging.error(f"일별 주가 조회 실패: {response.text}")
+            
+        except Exception as e:
+            logging.error(f"일별 주가 조회 중 오류 발생: {str(e)}")
             return None 
