@@ -64,7 +64,7 @@ class KISKRAPIManager:
         }
         
         response = requests.get(url, headers=headers, params=params)
-        time.sleep(1.0 if self.is_paper_trading else 0.5)  # 모의투자: 1초, 실전투자: 0.5초
+        time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
         
         if response.status_code == 200:
             return response.json()
@@ -120,7 +120,7 @@ class KISKRAPIManager:
         }
         
         response = requests.get(url, headers=headers, params=params)
-        time.sleep(1.0 if self.is_paper_trading else 0.5)  # 모의투자: 1초, 실전투자: 0.5초
+        time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
         
         if response.status_code == 200:
             data = response.json()
@@ -157,7 +157,7 @@ class KISKRAPIManager:
             params['CTX_AREA_NK100'] = ctx_area_nk100
             
             response = requests.get(url, headers=headers, params=params)
-            time.sleep(1.0 if self.is_paper_trading else 0.5)  # 모의투자: 1초, 실전투자: 0.5초
+            time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
             
             if response.status_code == 200:
                 data = response.json()
@@ -223,7 +223,7 @@ class KISKRAPIManager:
         }
         
         response = requests.get(url, headers=headers, params=params)
-        time.sleep(1.0 if self.is_paper_trading else 0.5)  # 모의투자: 1초, 실전투자: 0.5초
+        time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
         
         if response.status_code == 200:
             data = response.json()
@@ -281,7 +281,7 @@ class KISKRAPIManager:
         }
         
         response = requests.post(url, headers=headers, data=json.dumps(data))
-        time.sleep(1.0 if self.is_paper_trading else 0.5)  # 모의투자: 1초, 실전투자: 0.5초
+        time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
         
         if response.status_code == 200:
             result = response.json()
@@ -328,7 +328,7 @@ class KISKRAPIManager:
             
             # API 호출 후 대기
             response = requests.get(url, headers=headers, params=params)
-            time.sleep(1.0 if self.is_paper_trading else 0.5)  # 모의투자: 1초, 실전투자: 0.5초
+            time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
             
             if response.status_code == 200:
                 data = response.json()

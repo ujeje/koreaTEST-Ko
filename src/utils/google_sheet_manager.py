@@ -43,78 +43,113 @@ class GoogleSheetManager:
         self.discord_webhook_url = self.config['discord']['webhook_url']
     
     def get_settings(self, market_type: str = "KOR") -> dict:
-        """투자 설정을 가져옵니다."""
+        """구글 스프레드시트에서 설정값을 가져옵니다.
+        
+        Args:
+            market_type (str): 시장 유형 (KOR/USA)
+            
+        Returns:
+            dict: 설정값 딕셔너리
+        """
         try:
-            self.logger.info("설정 시트에서 설정값을 로드합니다...")
+            self.logger.info(f"{market_type} 시장 설정을 로드합니다.")
             
-            # 시장별 설정 시트 선택
-            settings_sheet = self.sheets['settings_kr'] if market_type == "KOR" else self.sheets['settings_us']
+            # 시장 유형에 따른 설정 시트 선택
+            if market_type == "KOR":
+                settings_sheet = self.config['google_sheet']['sheets']['settings_kr']
+            elif market_type == "USA":
+                settings_sheet = self.config['google_sheet']['sheets']['settings_us']
+            else:
+                raise ValueError(f"지원하지 않는 시장 유형입니다: {market_type}")
             
-            # 모든 설정값을 한 번에 조회
+            # 설정값 범위 지정
             ranges = [
                 f"{settings_sheet}!{self.coordinates['settings']['max_individual_stocks']}",
                 f"{settings_sheet}!{self.coordinates['settings']['max_pool_stocks']}",
                 f"{settings_sheet}!{self.coordinates['settings']['min_cash_ratio']}",
-                f"{settings_sheet}!{self.coordinates['settings']['market_open_ratio']}",
-                f"{settings_sheet}!{self.coordinates['settings']['market_close_ratio']}",
                 f"{settings_sheet}!{self.coordinates['settings']['stop_loss']}",
                 f"{settings_sheet}!{self.coordinates['settings']['trailing_start']}",
-                f"{settings_sheet}!{self.coordinates['settings']['trailing_stop']}"
+                f"{settings_sheet}!{self.coordinates['settings']['trailing_stop']}",
+                f"{settings_sheet}!{self.coordinates['settings']['rebalancing_date']}",
+                f"{settings_sheet}!{self.coordinates['settings']['rebalancing_ratio']}",
             ]
             
-            result = self.sheet.values().batchGet(
+            # 시장 유형에 따라 다른 설정 추가
+            if market_type == "KOR":
+                # 국내 시장: 매수시간, 매도시간
+                ranges.extend([
+                    f"{settings_sheet}!{self.coordinates['settings']['buy_time']}",
+                    f"{settings_sheet}!{self.coordinates['settings']['sell_time']}"
+                ])
+            else:
+                # 미국 시장: 시가 매수 비율, 종가 매수 비율
+                ranges.extend([
+                    f"{settings_sheet}!{self.coordinates['settings']['market_open_ratio']}",
+                    f"{settings_sheet}!{self.coordinates['settings']['market_close_ratio']}"
+                ])
+            
+            # 설정값 조회
+            result = self.service.spreadsheets().values().batchGet(
                 spreadsheetId=self.spreadsheet_id,
                 ranges=ranges
             ).execute()
             
-            # 결과값 추출
-            values = []
-            for value_range in result.get('valueRanges', []):
-                value = value_range.get('values', [[0]])[0][0]
-                values.append(value)
+            value_ranges = result.get('valueRanges', [])
             
-            # 값이 8개가 아닌 경우 기본값 사용
-            if len(values) != 8:
-                self.logger.warning("일부 설정값이 누락되었습니다. 기본값을 사용합니다.")
-                return {
-                    'max_individual_stocks': 5,
-                    'max_pool_stocks': 3,
-                    'min_cash_ratio': 0.1,
-                    'market_open_ratio': 0.3,
-                    'market_close_ratio': 0.7,
-                    'stop_loss': -5.0,
-                    'trailing_start': 5.0,
-                    'trailing_stop': -3.0
-                }
-            
-            # 스탑로스 관련 설정값은 입력된 부호 그대로 사용 (음수/양수)
-            return {
-                'max_individual_stocks': int(float(values[0])) if values[0] else 5,
-                'max_pool_stocks': int(float(values[1])) if values[1] else 3,
-                'min_cash_ratio': float(values[2]) / 100 if values[2] else 0.1,
-                'market_open_ratio': float(values[3]) / 100 if values[3] else 0.3,
-                'market_close_ratio': float(values[4]) / 100 if values[4] else 0.7,
-                'stop_loss': float(values[5]) if values[5] else -5.0,
-                'trailing_start': float(values[6]) if values[6] else 5.0,
-                'trailing_stop': float(values[7]) if values[7] else -3.0
+            # 설정값 파싱
+            settings = {
+                'max_individual_stocks': int(value_ranges[0]['values'][0][0]) if value_ranges[0].get('values') else 5,
+                'max_pool_stocks': int(value_ranges[1]['values'][0][0]) if value_ranges[1].get('values') else 5,
+                'min_cash_ratio': float(value_ranges[2]['values'][0][0]) / 100 if value_ranges[2].get('values') else 0.3,
+                'stop_loss': float(value_ranges[3]['values'][0][0]) if value_ranges[3].get('values') else 5.0,
+                'trailing_start': float(value_ranges[4]['values'][0][0]) if value_ranges[4].get('values') else 10.0,
+                'trailing_stop': float(value_ranges[5]['values'][0][0]) if value_ranges[5].get('values') else 5.0,
+                'rebalancing_date': value_ranges[6]['values'][0][0] if value_ranges[6].get('values') else "",
+                'rebalancing_ratio': float(value_ranges[7]['values'][0][0]) / 100 if value_ranges[7].get('values') else 0.7,
             }
+            
+            # 시장 유형에 따라 다른 설정 추가
+            if market_type == "KOR":
+                # 국내 시장: 매수시간, 매도시간
+                settings.update({
+                    'buy_time': value_ranges[8]['values'][0][0] if value_ranges[8].get('values') else "0900",
+                    'sell_time': value_ranges[9]['values'][0][0] if value_ranges[9].get('values') else "1500"
+                })
+            else:
+                # 미국 시장: 시가 매수 비율, 종가 매수 비율
+                settings.update({
+                    'market_open_ratio': float(value_ranges[8]['values'][0][0]) / 100 if value_ranges[8].get('values') else 0.7,
+                    'market_close_ratio': float(value_ranges[9]['values'][0][0]) / 100 if value_ranges[9].get('values') else 0.3
+                })
+            
+            return settings
             
         except Exception as e:
-            error_msg = f"설정값 로드 실패: {str(e)}"
-            self.logger.error(error_msg)
-            from discord_webhook import DiscordWebhook
-            webhook = DiscordWebhook(url=self.discord_webhook_url, content=f"```diff\n- {error_msg}\n```")
-            webhook.execute()
-            return {
+            self.logger.error(f"설정 로드 중 오류 발생: {str(e)}")
+            # 기본 설정값 반환
+            default_settings = {
                 'max_individual_stocks': 5,
-                'max_pool_stocks': 3,
-                'min_cash_ratio': 0.1,
-                'market_open_ratio': 0.3,
-                'market_close_ratio': 0.7,
-                'stop_loss': -5.0,
-                'trailing_start': 5.0,
-                'trailing_stop': -3.0
+                'max_pool_stocks': 5,
+                'min_cash_ratio': 0.3,
+                'stop_loss': 5.0,
+                'trailing_start': 10.0,
+                'trailing_stop': 5.0,
+                'rebalancing_date': "",
+                'rebalancing_ratio': 0.7,
             }
+            
+            if market_type == "KOR":
+                default_settings.update({
+                    'buy_time': "0900",
+                    'sell_time': "1500"
+                })
+            else:
+                default_settings.update({
+                    'market_open_ratio': 0.7,
+                    'market_close_ratio': 0.3
+                })
+                
+            return default_settings
     
     def _parse_date(self, date_str) -> str:
         """다양한 형식의 날짜를 MMDD 형식으로 변환합니다."""
@@ -176,12 +211,21 @@ class GoogleSheetManager:
             return True
 
     def get_individual_stocks(self, market_type: str = "KOR") -> pd.DataFrame:
-        """개별 종목 정보를 가져옵니다."""
+        """개별 종목 정보를 가져옵니다.
+        
+        Args:
+            market_type (str): 시장 유형 (KOR/USA)
+        """
         try:
-            self.logger.info("개별 종목 시트에서 종목 정보를 로드합니다...")
+            self.logger.info(f"{market_type} 시장의 개별 종목 정보를 로드합니다...")
             
             # 시장별 설정 시트 선택
-            settings_sheet = self.sheets['settings_kr'] if market_type == "KOR" else self.sheets['settings_us']
+            if market_type == "KOR":
+                settings_sheet = self.sheets['settings_kr']  # 투자설정[KOR]
+            elif market_type == "USA":
+                settings_sheet = self.sheets['settings_us']  # 투자설정[USA]
+            else:
+                raise ValueError(f"지원하지 않는 시장 유형입니다: {market_type}")
             
             result = self.sheet.values().get(
                 spreadsheetId=self.spreadsheet_id,
@@ -245,12 +289,21 @@ class GoogleSheetManager:
             return pd.DataFrame(columns=columns)
     
     def get_pool_stocks(self, market_type: str = "KOR") -> pd.DataFrame:
-        """POOL 종목 정보를 가져옵니다."""
+        """POOL 종목 정보를 가져옵니다.
+        
+        Args:
+            market_type (str): 시장 유형 (KOR/USA)
+        """
         try:
-            self.logger.info("POOL 종목 시트에서 종목 정보를 로드합니다...")
+            self.logger.info(f"{market_type} 시장의 POOL 종목 정보를 로드합니다...")
             
             # 시장별 설정 시트 선택
-            settings_sheet = self.sheets['settings_kr'] if market_type == "KOR" else self.sheets['settings_us']
+            if market_type == "KOR":
+                settings_sheet = self.sheets['settings_kr']  # 투자설정[KOR]
+            elif market_type == "USA":
+                settings_sheet = self.sheets['settings_us']  # 투자설정[USA]
+            else:
+                raise ValueError(f"지원하지 않는 시장 유형입니다: {market_type}")
             
             result = self.sheet.values().get(
                 spreadsheetId=self.spreadsheet_id,
@@ -313,31 +366,31 @@ class GoogleSheetManager:
             webhook.execute()
             return pd.DataFrame(columns=columns)
     
-    def update_last_update_time(self, value: str) -> None:
+    def update_last_update_time(self, value: str, holdings_sheet: str) -> None:
         """마지막 업데이트 시간을 갱신합니다."""
         try:
             self.update_cell(
-                f"{self.sheets['holdings']}!{self.coordinates['holdings']['last_update']}", 
+                f"{holdings_sheet}!{self.coordinates['holdings']['last_update']}", 
                 value
             )
         except Exception as e:
             self.logger.error(f"마지막 업데이트 시간 갱신 실패: {str(e)}")
     
-    def update_error_message(self, value: str) -> None:
+    def update_error_message(self, value: str, holdings_sheet: str) -> None:
         """에러 메시지를 갱신합니다."""
         try:
             self.update_cell(
-                f"{self.sheets['holdings']}!{self.coordinates['holdings']['error_message']}", 
+                f"{holdings_sheet}!{self.coordinates['holdings']['error_message']}", 
                 value
             )
         except Exception as e:
             self.logger.error(f"에러 메시지 갱신 실패: {str(e)}")
     
-    def update_holdings(self, values: list) -> None:
+    def update_holdings(self, values: list, holdings_sheet: str) -> None:
         """보유 종목 리스트를 갱신합니다."""
         try:
             self.update_range(
-                f"{self.sheets['holdings']}!{self.coordinates['holdings']['stock_list']}", 
+                f"{holdings_sheet}!{self.coordinates['holdings']['stock_list']}", 
                 values
             )
         except Exception as e:

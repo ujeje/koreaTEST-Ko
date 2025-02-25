@@ -36,7 +36,7 @@ class BaseTrader:
         
         # 실전/모의투자에 따른 API 호출 간격 설정
         self.is_paper_trading = self.config['api']['is_paper_trading']
-        self.api_call_interval = 0.5 if self.is_paper_trading else 0.2  # 모의투자: 2건/초, 실전투자: 5건/초
+        self.api_call_interval = 0.5 if self.is_paper_trading else 0.3  # 모의투자: 0.5초, 실전투자: 0.3초
         self.max_retries = 3
         self.daily_orders_file = f'data/daily_orders_{market_type.lower()}.json'
         self.daily_sold_stocks_file = f'data/daily_sold_stocks_{market_type.lower()}.json'
@@ -50,7 +50,6 @@ class BaseTrader:
         self.logger = setup_logger(market_type, self.config)
         
         # 초기화
-        self.load_settings()
         self.load_daily_orders()
         self.load_daily_sold_stocks()
     
@@ -92,17 +91,6 @@ class BaseTrader:
                 if attempt == self.max_retries - 1:  # 마지막 시도
                     raise Exception(f"API 호출 실패 (최대 재시도 횟수 초과): {str(e)}")
                 time.sleep(self.api_call_interval * (attempt + 1))  # 점진적 대기 시간 증가
-    
-    def load_settings(self) -> None:
-        """구글 스프레드시트에서 설정을 로드합니다."""
-        try:
-            self.settings = self.google_sheet.get_settings()
-            self.individual_stocks = self.google_sheet.get_individual_stocks()
-            self.pool_stocks = self.google_sheet.get_pool_stocks()
-            logging.info(f"{self.market_type} 설정을 성공적으로 로드했습니다.")
-        except Exception as e:
-            logging.error(f"{self.market_type} 설정 로드 실패: {str(e)}")
-            raise
     
     def load_daily_orders(self):
         """당일 매수 종목 정보를 로드합니다."""
@@ -204,124 +192,48 @@ class BaseTrader:
         raise NotImplementedError("This method should be implemented by subclass")
     
     def update_stock_report(self) -> None:
-        """주식 현황을 구글 스프레드시트에 업데이트합니다."""
+        """주식 현황을 구글 스프레드시트에 업데이트합니다. 하위 클래스에서 구현해야 합니다."""
+        raise NotImplementedError("This method should be implemented by subclass")
+    
+    def _update_holdings_sheet(self, holdings_data: list, holdings_sheet: str) -> None:
+        """주식 현황 시트를 업데이트합니다.
+        
+        Args:
+            holdings_data (list): 보유 종목 데이터 리스트
+            holdings_sheet (str): 주식현황 시트명
+        """
         try:
-            # 계좌 잔고 조회
-            if hasattr(self, 'kis_api'):
-                api = self.kis_api
-            elif hasattr(self, 'api'):
-                api = self.api
-            else:
-                raise Exception("API 객체를 찾을 수 없습니다.")
-            
-            balance = api.get_account_balance()
-            if balance is None:
-                raise Exception("계좌 잔고 조회 실패")
-            
             # 현재 시간 업데이트
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.google_sheet.update_last_update_time(now)
-            self.google_sheet.update_error_message("")
+            
+            # 시트 업데이트
+            self.google_sheet.update_last_update_time(now, holdings_sheet)
+            self.google_sheet.update_error_message("", holdings_sheet)
             
             # 보유 주식 리스트 초기화
-            self.google_sheet.update_holdings([[]])
+            self.google_sheet.update_holdings([[]], holdings_sheet)
             
             # 보유 주식 리스트 업데이트
-            holdings_data = []
-            for holding in balance['output1']:
-                if int(holding.get('hldg_qty', 0)) <= 0:
-                    continue
-                    
-                stock_code = holding['pdno']
-                current_price_data = self._retry_api_call(api.get_stock_price, stock_code)
-                
-                if current_price_data:
-                    holdings_data.append([
-                        stock_code,                                                # 종목코드
-                        holding['prdt_name'],                                     # 종목명
-                        float(current_price_data['output']['stck_prpr']),        # 현재가
-                        '',                                                       # 구분
-                        float(current_price_data['output']['prdy_ctrt']),        # 등락률
-                        float(holding['pchs_avg_pric']),                         # 평단가
-                        float(holding['evlu_pfls_rt']),                          # 수익률
-                        int(holding['hldg_qty']),                                # 보유량
-                        float(holding['evlu_pfls_amt']),                         # 평가손익
-                        float(holding['pchs_amt']),                              # 매입금액
-                        float(holding['evlu_amt'])                               # 평가금액
-                    ])
-            
             if holdings_data:
-                self.google_sheet.update_holdings(holdings_data)
+                self.google_sheet.update_holdings(holdings_data, holdings_sheet)
             
-            logging.info("주식 현황 업데이트 완료")
+            self.logger.info("주식 현황 업데이트 완료")
             
         except Exception as e:
             error_msg = f"주식 현황 업데이트 실패: {str(e)}"
-            logging.error(error_msg)
-            self.google_sheet.update_error_message(error_msg)
+            self.logger.error(error_msg)
+            self.google_sheet.update_error_message(error_msg, holdings_sheet)
             raise
+    
+    def _get_holdings_sheet(self) -> str:
+        """거래소별 주식현황 시트를 반환합니다."""
+        if self.market_type == "KOR":
+            return self.config['google_sheet']['sheets']['holdings_kr']  # 주식현황[KOR]
+        elif self.market_type == "USA":
+            return self.config['google_sheet']['sheets']['holdings_us']  # 주식현황[USA]
+        else:
+            raise ValueError(f"지원하지 않는 시장 유형입니다: {self.market_type}")
     
     def check_market_condition(self) -> bool:
         """시장 상태를 체크합니다. 하위 클래스에서 구현해야 합니다."""
         raise NotImplementedError("This method should be implemented by subclass")
-    
-    def _check_stop_conditions_for_stock(self, holding: Dict, current_price: float) -> bool:
-        """개별 종목의 스탑로스와 트레일링 스탑 조건을 체크합니다."""
-        try:
-            stock_code = holding.get('pdno', holding.get('ovrs_pdno', ''))
-            
-            # 매수 평균가 처리
-            pchs_avg_pric = holding.get('pchs_avg_pric', '')
-            if not pchs_avg_pric or str(pchs_avg_pric).strip() == '':
-                logging.warning(f"매수 평균가가 비어있습니다: {stock_code}")
-                return False
-            entry_price = float(pchs_avg_pric)
-            
-            # 보유 수량 처리
-            hldg_qty = holding.get('hldg_qty', holding.get('ord_psbl_qty', ''))
-            if not hldg_qty or str(hldg_qty).strip() == '':
-                logging.warning(f"보유 수량이 비어있습니다: {stock_code}")
-                return False
-            quantity = int(hldg_qty)
-            
-            name = holding.get('prdt_name', stock_code)
-            
-            # 보유 수량이 없는 경우는 정상적인 상황이므로 조용히 리턴
-            if quantity <= 0:
-                return False
-            
-            # 매수 평균가가 유효하지 않은 경우에만 경고
-            if entry_price <= 0:
-                logging.warning(f"매수 평균가({entry_price})가 유효하지 않습니다: {name}")
-                return False
-            
-            # 스탑로스 체크
-            loss_pct = (current_price - entry_price) / entry_price * 100
-            if loss_pct <= -self.settings['stop_loss']:
-                result = self.kis_api.order_stock(stock_code, "SELL", quantity)
-                if result:
-                    self.send_discord_message(f"스탑로스 매도 실행: {name} {quantity}주 (손실률: {self.settings['stop_loss']}%)")
-                return True
-            
-            # 트레일링 스탑 체크
-            highest_price_str = holding.get('highest_price', '')
-            highest_price = float(highest_price_str) if highest_price_str and str(highest_price_str).strip() != '' else entry_price
-            
-            if highest_price <= 0:
-                highest_price = entry_price
-            
-            if current_price > highest_price:
-                holding['highest_price'] = current_price
-            else:
-                drop_pct = (current_price - highest_price) / highest_price * 100
-                if drop_pct <= -self.settings['trailing_stop_loss']:
-                    result = self.kis_api.order_stock(stock_code, "SELL", quantity)
-                    if result:
-                        self.send_discord_message(f"트레일링 스탑 매도 실행: {name} {quantity}주 (하락률: {self.settings['trailing_stop_loss']}%)")
-                    return True
-            
-            return False
-            
-        except Exception as e:
-            logging.error(f"스탑 조건 체크 중 오류 발생: {str(e)}")
-            return False 

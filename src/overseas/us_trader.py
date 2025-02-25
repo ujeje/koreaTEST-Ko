@@ -13,8 +13,13 @@ class USTrader(BaseTrader):
     """미국 주식 트레이더"""
     
     def __init__(self, config_path: str):
+        """
+        Args:
+            config_path (str): 설정 파일 경로
+        """
         super().__init__(config_path, "USA")
         self.api = KISUSAPIManager(config_path)
+        self.load_settings()
         self.us_timezone = pytz.timezone(self.config['trading']['usa_timezone'])
         self.last_api_call = 0
         self.api_call_interval = 1.0  # API 호출 간격 (초)
@@ -48,7 +53,7 @@ class USTrader(BaseTrader):
     def load_settings(self) -> None:
         """구글 스프레드시트에서 설정을 로드합니다."""
         try:
-            self.settings = self.google_sheet.get_settings()
+            self.settings = self.google_sheet.get_settings(market_type="USA")
             self.individual_stocks = self.google_sheet.get_individual_stocks(market_type="USA")
             self.pool_stocks = self.google_sheet.get_pool_stocks(market_type="USA")
             
@@ -130,6 +135,155 @@ class USTrader(BaseTrader):
             return False, None
         return bool(prev_close < ma), ma
         
+    def _is_rebalancing_day(self) -> bool:
+        """리밸런싱 실행 여부를 확인합니다."""
+        try:
+            # 리밸런싱 일자 확인
+            rebalancing_date = self.settings.get('rebalancing_date', '')
+            if not rebalancing_date:
+                return False
+            
+            # 현재 날짜/시간 확인 (미국 시간 기준)
+            now = datetime.now(self.us_timezone)
+            current_time = now.strftime("%H%M")
+            
+            # 리밸런싱 일자 파싱
+            for sep in ['/', '-', '.']:
+                if sep in str(rebalancing_date):
+                    year, month, day = map(int, str(rebalancing_date).split(sep))
+                    target_day = str(day).zfill(2)
+                    if str(now.day).zfill(2) == target_day:
+                        # 리밸런싱 시간 확인 (09:00 ~ 09:10)
+                        return "0900" <= current_time <= "0910"
+                    return False
+            
+            # 숫자만 있는 경우 (예: "15")
+            if str(rebalancing_date).isdigit():
+                target_day = str(int(rebalancing_date)).zfill(2)
+                if str(now.day).zfill(2) == target_day:
+                    # 리밸런싱 시간 확인 (09:00 ~ 09:10)
+                    return "0900" <= current_time <= "0910"
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"리밸런싱 일자 확인 중 오류 발생: {str(e)}")
+            return False
+
+    def _rebalance_portfolio(self, balance: Dict):
+        """포트폴리오 리밸런싱을 실행합니다."""
+        try:
+            self.logger.info("포트폴리오 리밸런싱을 시작합니다.")
+            
+            # 총 평가금액 계산
+            total_balance = self._retry_api_call(self.api.get_total_balance)
+            if total_balance is None:
+                return
+            
+            # USD 통화 정보 찾기
+            usd_balance = next(x for x in total_balance['output2'] if x['crcy_cd'] == 'USD')
+            
+            # 총자산금액을 환율로 나누어 달러로 환산
+            total_assets = float(total_balance['output3']['tot_asst_amt']) / float(usd_balance['frst_bltn_exrt'])
+            
+            # 구글 시트에서 리밸런싱 비율 가져오기
+            rebalancing_ratio = float(self.settings.get('rebalancing_ratio', 0))
+            if not rebalancing_ratio:
+                self.logger.error("리밸런싱 비율이 설정되지 않았습니다.")
+                return
+            
+            # 현금 보유 비율 계산
+            cash_ratio = (1 - rebalancing_ratio/100)
+            target_cash = total_assets * cash_ratio
+            
+            # 보유 종목별 현재 비율 계산
+            holdings = {}
+            for holding in balance['output1']:
+                if int(holding.get('ord_psbl_qty', 0)) > 0:
+                    stock_code = holding['ovrs_pdno']
+                    exchange = holding.get('ovrs_excg_cd', '')  # NASD, NYSE, AMEX
+                    full_stock_code = f"{stock_code}.{exchange}"
+                    
+                    current_price_data = self._retry_api_call(self.api.get_stock_price, full_stock_code)
+                    if current_price_data is None:
+                        continue
+                        
+                    current_price = float(current_price_data['output']['last'])
+                    quantity = int(holding['ord_psbl_qty'])
+                    current_value = current_price * quantity
+                    current_ratio = current_value / total_assets * 100
+                    
+                    # 목표 비율 찾기
+                    target_ratio = 0
+                    stock_info = None
+                    
+                    # 개별 종목에서 찾기
+                    individual_match = self.individual_stocks[self.individual_stocks['종목코드'] == stock_code]
+                    if not individual_match.empty:
+                        stock_info = individual_match.iloc[0]
+                        target_ratio = float(stock_info['배분비율']) * rebalancing_ratio / 100
+                    else:
+                        # POOL 종목에서 찾기
+                        pool_match = self.pool_stocks[self.pool_stocks['종목코드'] == stock_code]
+                        if not pool_match.empty:
+                            stock_info = pool_match.iloc[0]
+                            target_ratio = float(stock_info['배분비율']) * rebalancing_ratio / 100
+                    
+                    if stock_info is not None:
+                        holdings[full_stock_code] = {
+                            'name': stock_info['종목명'],
+                            'current_price': current_price,
+                            'quantity': quantity,
+                            'current_value': current_value,
+                            'current_ratio': current_ratio,
+                            'target_ratio': target_ratio
+                        }
+            
+            # 리밸런싱 실행
+            for stock_code, info in holdings.items():
+                ratio_diff = info['target_ratio'] - info['current_ratio']
+                
+                # 최소 리밸런싱 비율 차이 (1% 이상)
+                if abs(ratio_diff) >= 1.0:
+                    target_value = total_assets * (info['target_ratio'] / 100)
+                    value_diff = target_value - info['current_value']
+                    quantity_diff = int(value_diff / info['current_price'])
+                    
+                    if quantity_diff > 0:  # 매수
+                        result = self._retry_api_call(
+                            self.api.order_stock,
+                            stock_code,
+                            "BUY",
+                            quantity_diff,
+                            info['current_price']
+                        )
+                        if result:
+                            msg = f"리밸런싱 매수: {info['name']}({stock_code}) {quantity_diff}주"
+                            msg += f"\n- 현재 비중: {info['current_ratio']:.1f}% → 목표 비중: {info['target_ratio']:.1f}%"
+                            msg += f"\n- 현재가: ${info['current_price']:.2f}"
+                            msg += f"\n- 매수 금액: ${value_diff:,.2f}"
+                            self.logger.info(msg)
+                            
+                    elif quantity_diff < 0:  # 매도
+                        result = self._retry_api_call(
+                            self.api.order_stock,
+                            stock_code,
+                            "SELL",
+                            abs(quantity_diff),
+                            info['current_price']
+                        )
+                        if result:
+                            msg = f"리밸런싱 매도: {info['name']}({stock_code}) {abs(quantity_diff)}주"
+                            msg += f"\n- 현재 비중: {info['current_ratio']:.1f}% → 목표 비중: {info['target_ratio']:.1f}%"
+                            msg += f"\n- 현재가: ${info['current_price']:.2f}"
+                            msg += f"\n- 매도 금액: ${abs(value_diff):,.2f}"
+                            self.logger.info(msg)
+            
+            self.logger.info("포트폴리오 리밸런싱이 완료되었습니다.")
+            
+        except Exception as e:
+            self.logger.error(f"포트폴리오 리밸런싱 중 오류 발생: {str(e)}")
+
     def execute_trade(self):
         """매매를 실행합니다."""
         try:
@@ -149,6 +303,17 @@ class USTrader(BaseTrader):
             if not self.check_market_condition():
                 return
             
+            # 계좌 잔고 조회
+            balance = self._retry_api_call(self.api.get_account_balance)
+            if balance is None:
+                self.logger.error("계좌 잔고 조회 실패")
+                return
+            
+            # 리밸런싱 체크 및 실행
+            if self._is_rebalancing_day():
+                self._rebalance_portfolio(balance)
+                return
+            
             # 장 시작 매매 조건
             is_market_open = (self._is_market_open_time() and not self.market_open_executed) or self.is_first_execution
             # 종가 매수 조건
@@ -157,12 +322,6 @@ class USTrader(BaseTrader):
             # 매매 시점이 아니면서 첫 실행도 아닌 경우, 스탑로스/트레일링 스탑만 체크
             if not (is_market_open or is_market_close) and not self.is_first_execution:
                 self._check_stop_conditions()
-                return
-            
-            # 계좌 잔고 조회
-            balance = self._retry_api_call(self.api.get_account_balance)
-            if balance is None:
-                self.logger.error("계좌 잔고 조회 실패")
                 return
             
             # 개별 종목 매매 처리
@@ -242,9 +401,14 @@ class USTrader(BaseTrader):
                         trade_msg = f"매도 조건 성립 - {row['종목명']}({stock_code}): 전일 종가 ${prev_close:.2f} < {ma_period}일 이동평균 [${ma:.2f}]"
                         self.logger.info(trade_msg)
                         
-                        result = self._retry_api_call(self.api.order_stock, stock_code, "SELL", quantity)
+                        result = self._retry_api_call(self.api.order_stock, stock_code, "SELL", quantity, current_price)
                         if result:
-                            msg = f"매도 주문 실행: {row['종목명']} {quantity}주 (시장가) - 이동평균 하향돌파"
+                            msg = f"매도 주문 실행: {row['종목명']}({stock_code}) {quantity}주 (지정가: ${current_price:,.2f})"
+                            msg += f"\n- 매도 사유: 이동평균 하향돌파"
+                            msg += f"\n- 매도 정보: 주문가 ${current_price:,.2f} / 총금액 ${current_price * quantity:,.2f}"
+                            msg += f"\n- 이동평균: {ma_period}일선 ${ma:.2f} > 전일종가 ${prev_close:.2f}"
+                            msg += f"\n- 매도 수익률: {((current_price - prev_close) / prev_close * 100):.2f}% (매수가 ${prev_close:,.2f})"
+                            msg += f"\n- 계좌 상태: 총평가금액 ${total_assets:,.2f}"
                             self.logger.info(msg)
                             self.add_daily_sold_stock(stock_code)  # 당일 매도 종목에 추가
             
@@ -303,9 +467,14 @@ class USTrader(BaseTrader):
                             # 시장가 매수 (설정된 비율만큼)
                             market_quantity = int(total_quantity * self.settings['market_open_ratio'])
                             if market_quantity > 0:
-                                result = self._retry_api_call(self.api.order_stock, stock_code, "BUY", market_quantity)
+                                result = self._retry_api_call(self.api.order_stock, stock_code, "BUY", market_quantity, current_price)
                                 if result:
-                                    msg = f"매수 주문 실행: {row['종목명']} {market_quantity}주 (시장가) - 이동평균 상향돌파 (배분비율: {allocation_ratio*100}%)"
+                                    msg = f"매수 주문 실행: {row['종목명']}({stock_code}) {market_quantity}주 (지정가: ${current_price:,.2f})"
+                                    msg += f"\n- 매수 사유: 이동평균 상향돌파"
+                                    msg += f"\n- 매수 정보: 주문가 ${current_price:,.2f} / 총금액 ${current_price * market_quantity:,.2f}"
+                                    msg += f"\n- 배분비율: {allocation_ratio*100}% (총자산 ${total_assets:,.2f} 중 ${buy_amount:,.2f})"
+                                    msg += f"\n- 이동평균: {ma_period}일선 ${ma:.2f} < 전일종가 ${prev_close:.2f}"
+                                    msg += f"\n- 계좌 상태: 총평가금액 ${total_assets:,.2f}"
                                     self.logger.info(msg)
                                     # 종가 매수를 위한 정보 저장
                                     self.pending_close_orders.append({
@@ -384,9 +553,12 @@ class USTrader(BaseTrader):
             if total_balance is None:
                 return False
             
+            # USD 통화 정보 찾기
+            usd_balance = next(x for x in total_balance['output2'] if x['crcy_cd'] == 'USD')
+            
             # 총자산금액을 환율로 나누어 달러로 환산
-            total_assets = float(total_balance['output3']['tot_asst_amt']) / float([x['frst_bltn_exrt'] for x in total_balance['output2'] if x['crcy_cd'] == 'USD'][0])
-            d2_deposit = float(total_balance['output3']['frcr_dncl_amt_2']) / float([x['frst_bltn_exrt'] for x in total_balance['output2'] if x['crcy_cd'] == 'USD'][0])
+            total_assets = float(total_balance['output3']['tot_asst_amt']) / float(usd_balance['frst_bltn_exrt'])
+            d2_deposit = float(usd_balance['frcr_dncl_amt_2'])
             
             # 스탑로스 체크
             loss_pct = (current_price - entry_price) / entry_price * 100
@@ -395,9 +567,9 @@ class USTrader(BaseTrader):
                 self.logger.info(trade_msg)
                 
                 # 스탑로스 매도
-                result = self._retry_api_call(self.api.order_stock, stock_code, "SELL", quantity)
+                result = self._retry_api_call(self.api.order_stock, stock_code, "SELL", quantity, current_price)
                 if result:
-                    msg = f"스탑로스 매도 실행: {name} {quantity}주 (시장가)"
+                    msg = f"스탑로스 매도 실행: {name} {quantity}주 (지정가)"
                     msg += f"\n- 매도 사유: 손실률 {loss_pct:.2f}% (스탑로스 {self.settings['stop_loss']}% 도달)"
                     msg += f"\n- 매도 금액: ${current_price * quantity:,.2f} (현재가 ${current_price:,.2f})"
                     msg += f"\n- 매수 정보: 매수단가 ${entry_price:,.2f} / 평가손익 ${(current_price - entry_price) * quantity:,.2f}"
@@ -442,9 +614,9 @@ class USTrader(BaseTrader):
                         self.logger.info(msg)
                     
                     if drop_pct <= self.settings['trailing_stop']:
-                        result = self._retry_api_call(self.api.order_stock, stock_code, "SELL", quantity)
+                        result = self._retry_api_call(self.api.order_stock, stock_code, "SELL", quantity, current_price)
                         if result:
-                            msg = f"트레일링 스탑 매도 실행: {name} {quantity}주 (시장가)"
+                            msg = f"트레일링 스탑 매도 실행: {name} {quantity}주 (지정가)"
                             msg += f"\n- 매도 사유: 고점 대비 하락률 {drop_pct:.2f}% (트레일링 스탑 {self.settings['trailing_stop']}% 도달)"
                             msg += f"\n- 매도 금액: ${current_price * quantity:,.2f} (현재가 ${current_price:,.2f})"
                             msg += f"\n- 매수 정보: 매수단가 ${entry_price:,.2f} / 평가손익 ${(current_price - entry_price) * quantity:,.2f}"
@@ -458,3 +630,43 @@ class USTrader(BaseTrader):
         except Exception as e:
             self.logger.error(f"개별 종목 스탑 조건 체크 중 오류 발생: {str(e)}")
             return False 
+
+    def update_stock_report(self) -> None:
+        """미국 주식 현황을 구글 스프레드시트에 업데이트합니다."""
+        try:
+            # 계좌 잔고 조회
+            balance = self.api.get_account_balance()
+            if balance is None:
+                raise Exception("계좌 잔고 조회 실패")
+            
+            # 보유 종목 데이터 생성
+            holdings_data = []
+            for holding in balance['output1']:
+                if int(holding.get('ovrs_cblc_qty', 0)) <= 0:
+                    continue
+                
+                full_stock_code = f"{holding['ovrs_pdno']}.{holding['ovrs_excg_cd']}"
+                current_price_data = self._retry_api_call(self.api.get_stock_price, full_stock_code)
+                
+                if current_price_data:
+                    holdings_data.append([
+                        holding['ovrs_pdno'],                                           # 종목코드
+                        holding['ovrs_item_name'],                           # 종목명
+                        float(current_price_data['output']['last']),         # 현재가
+                        '',                                                  # 구분
+                        float(current_price_data['output']['rate']),         # 등락률
+                        float(holding['pchs_avg_pric']),                     # 평단가
+                        float(holding['evlu_pfls_rt']),                      # 수익률
+                        int(holding['ovrs_cblc_qty']),                       # 보유량
+                        float(holding['frcr_evlu_pfls_amt']),               # 평가손익
+                        float(holding['frcr_pchs_amt1']),                   # 매입금액
+                        float(holding['ovrs_stck_evlu_amt'])                # 평가금액
+                    ])
+            
+            # 주식현황 시트 업데이트
+            holdings_sheet = self._get_holdings_sheet()
+            self._update_holdings_sheet(holdings_data, holdings_sheet)
+            
+        except Exception as e:
+            self.logger.error(f"미국 주식 현황 업데이트 실패: {str(e)}")
+            raise 
