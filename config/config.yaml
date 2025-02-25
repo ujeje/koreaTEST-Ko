@@ -32,18 +32,18 @@ google_sheet:
   coordinates:
     # 투자설정 탭의 각 설정값 좌표 (국내/미국 공통)
     settings:
-      max_individual_stocks: "G1"    # 최대 개별 종목 수
-      max_pool_stocks: "G2"          # 최대 POOL 종목 수
-      min_cash_ratio: "G3"           # 최소 현금 보유 비율 (%)
-      market_open_ratio: "G8"        # 시가 매수 비율 (%)
-      market_close_ratio: "G9"       # 종가 매수 비율 (%)
-      stop_loss: "G4"                # 스탑로스 설정값 (%)
-      trailing_start: "G5"           # 트레일링 시작 설정값 (%)
-      trailing_stop: "G6"            # 트레일링 스탑 설정값 (%)
-      rebalancing_date: "G11"        # 리밸런싱 일자
-      rebalancing_ratio: "G12"       # 리밸런싱 비율 (%)
+      max_individual_stocks: "G4"    # 최대 개별 종목 수
+      max_pool_stocks: "G5"          # 최대 POOL 종목 수
+      min_cash_ratio: "G6"           # 최소 현금 보유 비율 (%)
       buy_time: "G8"                 # 국내 시장 매수 시간
       sell_time: "G9"                # 국내 시장 매도 시간
+      market_open_ratio: "G8"        # 시가 매수 비율 (%)
+      market_close_ratio: "G9"       # 종가 매수 비율 (%)
+      stop_loss: "G14"               # 스탑로스 설정값 (%)
+      trailing_start: "G15"          # 트레일링 시작 설정값 (%)
+      trailing_stop: "G16"           # 트레일링 스탑 설정값 (%)
+      rebalancing_date: "G11"        # 리밸런싱 일자
+      rebalancing_ratio: "G12"       # 리밸런싱 비율 (%)
       individual_stocks: "A21:G50"   # 개별 종목 목록 범위
       pool_stocks: "A61:G80"         # POOL 종목 목록 범위
     

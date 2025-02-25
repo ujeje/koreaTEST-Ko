@@ -17,7 +17,7 @@ class KRTrader(BaseTrader):
             config_path (str): 설정 파일 경로
         """
         super().__init__(config_path, "KOR")
-        self.kis_api = KISKRAPIManager(config_path)
+        self.kr_api = KISKRAPIManager(config_path)
         self.load_settings()
         self.last_api_call = 0
         self.api_call_interval = 0.2  # API 호출 간격 (초)
@@ -92,7 +92,7 @@ class KRTrader(BaseTrader):
             end_date = datetime.now().strftime("%Y%m%d")
             start_date = (datetime.now() - timedelta(days=period*2)).strftime("%Y%m%d")
             
-            df = self.kis_api.get_daily_price(stock_code, start_date, end_date)
+            df = self.kr_api.get_daily_price(stock_code, start_date, end_date)
             if df is None or len(df) < period:
                 return None
             
@@ -177,7 +177,7 @@ class KRTrader(BaseTrader):
             for holding in balance['output1']:
                 if int(holding.get('hldg_qty', 0)) > 0:
                     stock_code = holding['pdno']
-                    current_price_data = self._retry_api_call(self.kis_api.get_stock_price, stock_code)
+                    current_price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
                     if current_price_data is None:
                         continue
                         
@@ -226,7 +226,7 @@ class KRTrader(BaseTrader):
                     if quantity_diff > 0:
                         order_type = "SELL" if ratio_diff > 0 else "BUY"
                         result = self._retry_api_call(
-                            self.kis_api.order_stock,
+                            self.kr_api.order_stock,
                             stock_code,
                             order_type,
                             quantity_diff,
@@ -300,7 +300,7 @@ class KRTrader(BaseTrader):
         """매수 주문을 실행합니다."""
         try:
             # 계좌 잔고 조회
-            balance = self._retry_api_call(self.kis_api.get_account_balance)
+            balance = self._retry_api_call(self.kr_api.get_account_balance)
             if not balance:
                 self.logger.error("계좌 잔고 조회 실패")
                 return
@@ -344,7 +344,7 @@ class KRTrader(BaseTrader):
                         continue
                 
                 # 현재가 조회
-                price_data = self._retry_api_call(self.kis_api.get_stock_price, stock_code)
+                price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
                 if not price_data:
                     self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
                     continue
@@ -399,7 +399,7 @@ class KRTrader(BaseTrader):
                     continue
                 
                 # 현재가 조회
-                price_data = self._retry_api_call(self.kis_api.get_stock_price, stock_code)
+                price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
                 if not price_data:
                     self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
                     continue
@@ -478,7 +478,7 @@ class KRTrader(BaseTrader):
                 self.logger.info(f"{stock_name}({stock_code}) - 매수 주문: {quantity}주 @ {price:,.0f}원")
                 
                 order_result = self._retry_api_call(
-                    self.kis_api.order_stock,
+                    self.kr_api.order_stock,
                     stock_code,
                     "BUY",
                     quantity
@@ -503,7 +503,7 @@ class KRTrader(BaseTrader):
         """매도 주문을 실행합니다."""
         try:
             # 계좌 잔고 조회
-            balance = self._retry_api_call(self.kis_api.get_account_balance)
+            balance = self._retry_api_call(self.kr_api.get_account_balance)
             if not balance:
                 self.logger.error("계좌 잔고 조회 실패")
                 return
@@ -537,7 +537,7 @@ class KRTrader(BaseTrader):
                     ma_period = int(self.pool_stocks[self.pool_stocks['종목코드'] == stock_code]['매매기준'].values[0])
                 
                 # 현재가 조회
-                price_data = self._retry_api_call(self.kis_api.get_stock_price, stock_code)
+                price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
                 if not price_data:
                     self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
                     continue
@@ -555,7 +555,7 @@ class KRTrader(BaseTrader):
                     self.logger.info(f"{stock_name}({stock_code}) - 매도 주문: {quantity}주 @ {current_price:,.0f}원")
                     
                     order_result = self._retry_api_call(
-                        self.kis_api.order_stock,
+                        self.kr_api.order_stock,
                         stock_code,
                         "SELL",
                         quantity
@@ -580,13 +580,13 @@ class KRTrader(BaseTrader):
     def _check_stop_conditions(self):
         """스탑로스와 트레일링 스탑 조건을 체크합니다."""
         try:
-            balance = self.kis_api.get_account_balance()
+            balance = self.kr_api.get_account_balance()
             if balance is None:
                 return
             
             for holding in balance['output1']:
                 stock_code = holding['pdno']
-                current_price_data = self.kis_api.get_stock_price(stock_code)
+                current_price_data = self.kr_api.get_stock_price(stock_code)
                 if current_price_data is None:
                     continue
                 
@@ -620,10 +620,10 @@ class KRTrader(BaseTrader):
                 self.logger.info(trade_msg)
                 
                 # 스탑로스 매도
-                result = self._retry_api_call(self.kis_api.order_stock, stock_code, "SELL", quantity)
+                result = self._retry_api_call(self.kr_api.order_stock, stock_code, "SELL", quantity)
                 if result:
                     # 잔고 재조회
-                    new_balance = self.kis_api.get_account_balance()
+                    new_balance = self.kr_api.get_account_balance()
                     total_balance = float(new_balance['output2'][0]['tot_evlu_amt'])
                     d2_deposit = float(new_balance['output2'][0]['dnca_tot_amt'])
                     
@@ -674,10 +674,10 @@ class KRTrader(BaseTrader):
                         trade_msg = f"트레일링 스탑 조건 성립 - {name}({stock_code}): 고점대비 하락률 {drop_pct:.2f}% <= {self.settings['trailing_stop']}%"
                         self.logger.info(trade_msg)
                         
-                        result = self._retry_api_call(self.kis_api.order_stock, stock_code, "SELL", quantity)
+                        result = self._retry_api_call(self.kr_api.order_stock, stock_code, "SELL", quantity)
                         if result:
                             # 잔고 재조회
-                            new_balance = self.kis_api.get_account_balance()
+                            new_balance = self.kr_api.get_account_balance()
                             total_balance = float(new_balance['output2'][0]['tot_evlu_amt'])
                             d2_deposit = float(new_balance['output2'][0]['dnca_tot_amt'])
                             
@@ -700,7 +700,7 @@ class KRTrader(BaseTrader):
         """국내 주식 현황을 구글 스프레드시트에 업데이트합니다."""
         try:
             # 계좌 잔고 조회
-            balance = self.kis_api.get_account_balance()
+            balance = self.kr_api.get_account_balance()
             if balance is None:
                 raise Exception("계좌 잔고 조회 실패")
             
@@ -711,7 +711,7 @@ class KRTrader(BaseTrader):
                     continue
                 
                 stock_code = holding['pdno']
-                current_price_data = self._retry_api_call(self.kis_api.get_stock_price, stock_code)
+                current_price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
                 
                 if current_price_data:
                     holdings_data.append([

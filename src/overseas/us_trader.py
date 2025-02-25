@@ -18,7 +18,7 @@ class USTrader(BaseTrader):
             config_path (str): 설정 파일 경로
         """
         super().__init__(config_path, "USA")
-        self.api = KISUSAPIManager(config_path)
+        self.us_api = KISUSAPIManager(config_path)
         self.load_settings()
         self.us_timezone = pytz.timezone(self.config['trading']['usa_timezone'])
         self.last_api_call = 0
@@ -111,7 +111,7 @@ class USTrader(BaseTrader):
             end_date = datetime.now(self.us_timezone).strftime('%Y%m%d')
             start_date = (datetime.now(self.us_timezone) - timedelta(days=period * 2)).strftime('%Y%m%d')
             
-            df = self.api.get_daily_price(stock_code, start_date, end_date)
+            df = self.us_api.get_daily_price(stock_code, start_date, end_date)
             if df is not None and not df.empty:
                 df['clos'] = pd.to_numeric(df['clos'], errors='coerce')
                 ma = df['clos'].rolling(window=period).mean().iloc[-2]  # 전일자 ?? 이동평균
@@ -176,7 +176,7 @@ class USTrader(BaseTrader):
             self.logger.info("포트폴리오 리밸런싱을 시작합니다.")
             
             # 총 평가금액 계산
-            total_balance = self._retry_api_call(self.api.get_total_balance)
+            total_balance = self._retry_api_call(self.us_api.get_total_balance)
             if total_balance is None:
                 return
             
@@ -204,7 +204,7 @@ class USTrader(BaseTrader):
                     exchange = holding.get('ovrs_excg_cd', '')  # NASD, NYSE, AMEX
                     full_stock_code = f"{stock_code}.{exchange}"
                     
-                    current_price_data = self._retry_api_call(self.api.get_stock_price, full_stock_code)
+                    current_price_data = self._retry_api_call(self.us_api.get_stock_price, full_stock_code)
                     if current_price_data is None:
                         continue
                         
@@ -251,7 +251,7 @@ class USTrader(BaseTrader):
                     
                     if quantity_diff > 0:  # 매수
                         result = self._retry_api_call(
-                            self.api.order_stock,
+                            self.us_api.order_stock,
                             stock_code,
                             "BUY",
                             quantity_diff,
@@ -266,7 +266,7 @@ class USTrader(BaseTrader):
                             
                     elif quantity_diff < 0:  # 매도
                         result = self._retry_api_call(
-                            self.api.order_stock,
+                            self.us_api.order_stock,
                             stock_code,
                             "SELL",
                             abs(quantity_diff),
@@ -304,7 +304,7 @@ class USTrader(BaseTrader):
                 return
             
             # 계좌 잔고 조회
-            balance = self._retry_api_call(self.api.get_account_balance)
+            balance = self._retry_api_call(self.us_api.get_account_balance)
             if balance is None:
                 self.logger.error("계좌 잔고 조회 실패")
                 return
@@ -366,7 +366,7 @@ class USTrader(BaseTrader):
             allocation_ratio = float(row['배분비율']) / 100 if row['배분비율'] and str(row['배분비율']).strip() != '' else 0.1
             
             # 현재가 조회 (재시도 로직 적용)
-            current_price_data = self._retry_api_call(self.api.get_stock_price, stock_code)
+            current_price_data = self._retry_api_call(self.us_api.get_stock_price, stock_code)
             if current_price_data is None:
                 return
             
@@ -401,7 +401,7 @@ class USTrader(BaseTrader):
                         trade_msg = f"매도 조건 성립 - {row['종목명']}({stock_code}): 전일 종가 ${prev_close:.2f} < {ma_period}일 이동평균 [${ma:.2f}]"
                         self.logger.info(trade_msg)
                         
-                        result = self._retry_api_call(self.api.order_stock, stock_code, "SELL", quantity, current_price)
+                        result = self._retry_api_call(self.us_api.order_stock, stock_code, "SELL", quantity, current_price)
                         if result:
                             msg = f"매도 주문 실행: {row['종목명']}({stock_code}) {quantity}주 (지정가: ${current_price:,.2f})"
                             msg += f"\n- 매도 사유: 이동평균 하향돌파"
@@ -432,13 +432,13 @@ class USTrader(BaseTrader):
                         return
                         
                     if not any(order['stock_code'] == stock_code for order in self.pending_close_orders):
-                        buyable_data = self._retry_api_call(self.api.get_psbl_amt, stock_code)
+                        buyable_data = self._retry_api_call(self.us_api.get_psbl_amt, stock_code)
                         if buyable_data is None:
                             return
                         
                         # 현금 보유 비율 체크
                         available_cash = float(buyable_data['output']['frcr_ord_psbl_amt1'])     #주문가능금액 - 외화인경우 "ord_psbl_frcr_amt" / 원화인경우 "frcr_ord_psbl_amt1"
-                        total_balance = self._retry_api_call(self.api.get_total_balance)
+                        total_balance = self._retry_api_call(self.us_api.get_total_balance)
                         if total_balance is None:
                             return
                         # 총자산금액을 환율로 나누어 달러로 환산
@@ -467,7 +467,7 @@ class USTrader(BaseTrader):
                             # 시장가 매수 (설정된 비율만큼)
                             market_quantity = int(total_quantity * self.settings['market_open_ratio'])
                             if market_quantity > 0:
-                                result = self._retry_api_call(self.api.order_stock, stock_code, "BUY", market_quantity, current_price)
+                                result = self._retry_api_call(self.us_api.order_stock, stock_code, "BUY", market_quantity, current_price)
                                 if result:
                                     msg = f"매수 주문 실행: {row['종목명']}({stock_code}) {market_quantity}주 (지정가: ${current_price:,.2f})"
                                     msg += f"\n- 매수 사유: 이동평균 상향돌파"
@@ -498,7 +498,7 @@ class USTrader(BaseTrader):
                             self.save_daily_orders()
                             return
                         
-                        result = self._retry_api_call(self.api.order_stock, stock_code, "BUY", order['quantity'], current_price)
+                        result = self._retry_api_call(self.us_api.order_stock, stock_code, "BUY", order['quantity'], current_price)
                         if result:
                             msg = f"종가 매수 주문 실행: {order['stock_name']} {order['quantity']}주 (지정가: ${current_price:.2f}) - 이동평균 상향돌파 잔여수량"
                             self.logger.info(msg)
@@ -511,7 +511,7 @@ class USTrader(BaseTrader):
     def _check_stop_conditions(self):
         """스탑로스와 트레일링 스탑 조건을 체크합니다."""
         try:
-            balance = self._retry_api_call(self.api.get_account_balance)
+            balance = self._retry_api_call(self.us_api.get_account_balance)
             if balance is None:
                 return
             
@@ -519,7 +519,7 @@ class USTrader(BaseTrader):
                 # 거래소와 종목코드 결합
                 exchange = holding.get('ovrs_excg_cd', '')  # NASD, NYSE, AMEX                
                 stock_code = f"{holding['ovrs_pdno']}.{exchange}"
-                current_price_data = self._retry_api_call(self.api.get_stock_price, stock_code)
+                current_price_data = self._retry_api_call(self.us_api.get_stock_price, stock_code)
                 if current_price_data is None:
                     continue
                 
@@ -549,7 +549,7 @@ class USTrader(BaseTrader):
                 return False
             
             # 계좌 잔고 조회
-            total_balance = self._retry_api_call(self.api.get_total_balance)
+            total_balance = self._retry_api_call(self.us_api.get_total_balance)
             if total_balance is None:
                 return False
             
@@ -567,7 +567,7 @@ class USTrader(BaseTrader):
                 self.logger.info(trade_msg)
                 
                 # 스탑로스 매도
-                result = self._retry_api_call(self.api.order_stock, stock_code, "SELL", quantity, current_price)
+                result = self._retry_api_call(self.us_api.order_stock, stock_code, "SELL", quantity, current_price)
                 if result:
                     msg = f"스탑로스 매도 실행: {name} {quantity}주 (지정가)"
                     msg += f"\n- 매도 사유: 손실률 {loss_pct:.2f}% (스탑로스 {self.settings['stop_loss']}% 도달)"
@@ -614,7 +614,7 @@ class USTrader(BaseTrader):
                         self.logger.info(msg)
                     
                     if drop_pct <= self.settings['trailing_stop']:
-                        result = self._retry_api_call(self.api.order_stock, stock_code, "SELL", quantity, current_price)
+                        result = self._retry_api_call(self.us_api.order_stock, stock_code, "SELL", quantity, current_price)
                         if result:
                             msg = f"트레일링 스탑 매도 실행: {name} {quantity}주 (지정가)"
                             msg += f"\n- 매도 사유: 고점 대비 하락률 {drop_pct:.2f}% (트레일링 스탑 {self.settings['trailing_stop']}% 도달)"
@@ -635,7 +635,7 @@ class USTrader(BaseTrader):
         """미국 주식 현황을 구글 스프레드시트에 업데이트합니다."""
         try:
             # 계좌 잔고 조회
-            balance = self.api.get_account_balance()
+            balance = self.us_api.get_account_balance()
             if balance is None:
                 raise Exception("계좌 잔고 조회 실패")
             
@@ -646,7 +646,7 @@ class USTrader(BaseTrader):
                     continue
                 
                 full_stock_code = f"{holding['ovrs_pdno']}.{holding['ovrs_excg_cd']}"
-                current_price_data = self._retry_api_call(self.api.get_stock_price, full_stock_code)
+                current_price_data = self._retry_api_call(self.us_api.get_stock_price, full_stock_code)
                 
                 if current_price_data:
                     holdings_data.append([

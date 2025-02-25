@@ -22,11 +22,11 @@ class KISKRAPIManager:
         Args:
             config_path (str): 설정 파일 경로
         """
-        # 설정 파일 로드
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
+        self.logger = logging.getLogger('kr_api')
+        self.token_manager = TokenManager(config_path)
+        self.config = self.token_manager.config
         
-        # 모의투자 여부에 따라 설정
+        # 실전/모의투자 설정
         self.is_paper_trading = self.config['api']['is_paper_trading']
         if self.is_paper_trading:
             self.base_url = self.config['api']['paper']['url']
@@ -39,7 +39,7 @@ class KISKRAPIManager:
             self.api_secret = self.config['api']['real']['secret']
             self.account_no = self.config['api']['real']['account']
         
-        self.token_manager = TokenManager(config_path)
+        self.logger.info(f"국내주식 API 매니저 초기화 완료 (모의투자: {self.is_paper_trading})")
     
     def _check_token(self) -> str:
         """토큰의 유효성을 확인하고 필요시 갱신합니다."""

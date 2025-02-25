@@ -22,11 +22,11 @@ class KISUSAPIManager:
         Args:
             config_path (str): 설정 파일 경로
         """
-        # 설정 파일 로드
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
+        self.logger = logging.getLogger('us_api')
+        self.token_manager = TokenManager(config_path)
+        self.config = self.token_manager.config
         
-        # 모의투자 여부에 따라 설정
+        # 실전/모의투자 설정
         self.is_paper_trading = self.config['api']['is_paper_trading']
         if self.is_paper_trading:
             self.base_url = self.config['api']['paper']['url']
@@ -39,7 +39,11 @@ class KISUSAPIManager:
             self.api_secret = self.config['api']['real']['secret']
             self.account_no = self.config['api']['real']['account']
         
-        self.token_manager = TokenManager(config_path)
+        self.logger.info(f"해외주식 API 매니저 초기화 완료 (모의투자: {self.is_paper_trading})")
+        
+        # API 호출 간격 제어
+        self.last_api_call = 0
+        self.api_call_interval = 0.5 if self.is_paper_trading else 0.3  # 모의투자: 0.5초, 실전투자: 0.3초
     
     def _check_token(self) -> str:
         """토큰의 유효성을 확인하고 필요시 갱신합니다."""
@@ -84,7 +88,7 @@ class KISUSAPIManager:
         }
         
         response = requests.get(url, headers=headers, params=params)
-        time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
+        time.sleep(self.api_call_interval)
         
         if response.status_code == 200:
             result = response.json()
@@ -141,7 +145,7 @@ class KISUSAPIManager:
         }
         
         response = requests.get(url, headers=headers, params=params)
-        time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
+        time.sleep(self.api_call_interval)
         
         if response.status_code == 200:
             data = response.json()
@@ -178,7 +182,7 @@ class KISUSAPIManager:
             params['CTX_AREA_NK200'] = ctx_area_nk200
             
             response = requests.get(url, headers=headers, params=params)
-            time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
+            time.sleep(self.api_call_interval)
             
             if response.status_code == 200:
                 data = response.json()
@@ -242,7 +246,7 @@ class KISUSAPIManager:
             
             # API 요청
             response = requests.get(url, headers=headers, params=params)
-            time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
+            time.sleep(self.api_call_interval)
             
             # 응답 확인
             if response.status_code == 200:
@@ -306,7 +310,7 @@ class KISUSAPIManager:
         }
         
         response = requests.post(url, headers=headers, data=json.dumps(data))
-        time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
+        time.sleep(self.api_call_interval)
         
         if response.status_code == 200:
             result = response.json()
@@ -373,7 +377,7 @@ class KISUSAPIManager:
             
             # API 호출 후 대기
             response = requests.get(url, headers=headers, params=params)
-            time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
+            time.sleep(self.api_call_interval)
             
             if response.status_code == 200:
                 data = response.json()
@@ -523,7 +527,7 @@ class KISUSAPIManager:
             
             # API 요청
             response = requests.get(url, headers=headers, params=params)
-            time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
+            time.sleep(self.api_call_interval)
             
             # 응답 확인
             if response.status_code == 200:
