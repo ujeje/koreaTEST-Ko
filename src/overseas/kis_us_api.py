@@ -553,4 +553,140 @@ class KISUSAPIManager:
                 
         except Exception as e:
             logging.error(f"체결기준현재잔고 조회 중 오류 발생: {str(e)}")
+            return None
+    
+    def get_today_executed_orders(self, stock_code: str = None) -> Optional[Dict]:
+        """해외주식 당일 체결내역을 조회합니다.
+        
+        Args:
+            stock_code (str, optional): 종목코드 (종목코드.거래소 형식). None인 경우 전체 종목 조회.
+            
+        Returns:
+            Dict: 당일 체결내역 정보를 담은 딕셔너리
+                - output: 당일 체결내역 리스트
+                    - ord_dt: 주문일자
+                    - ord_gno_brno: 주문채번지점번호
+                    - odno: 주문번호
+                    - orgn_odno: 원주문번호
+                    - sll_buy_dvsn_cd: 매도매수구분코드 (01:매도, 02:매수)
+                    - sll_buy_dvsn_cd_name: 매도매수구분코드명
+                    - rvse_cncl_dvsn: 정정취소구분
+                    - rvse_cncl_dvsn_name: 정정취소구분명
+                    - pdno: 상품번호
+                    - prdt_name: 상품명
+                    - ft_ord_qty: FT주문수량
+                    - ft_ord_unpr3: FT주문단가3
+                    - ft_ccld_qty: FT체결수량
+                    - ft_ccld_unpr3: FT체결단가3
+                    - ft_ccld_amt3: FT체결금액3
+                    - nccs_qty: 미체결수량
+                    - prcs_stat_name: 처리상태명
+                    - rjct_rson: 거부사유
+                    - ord_tmd: 주문시각
+                    - tr_mket_name: 거래시장명
+                    - tr_natn: 거래국가
+                    - tr_natn_name: 거래국가명
+                    - ovrs_excg_cd: 해외거래소코드
+        """
+        try:
+            access_token = self._check_token()
+            
+            # API 경로 설정
+            url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-ccnl"
+            
+            # 헤더 설정
+            headers = {
+                "Content-Type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {access_token}",
+                "appkey": self.api_key,
+                "appsecret": self.api_secret,
+                "tr_id": "VTTS3035R" if self.is_paper_trading else "TTTS3035R"  # 모의/실전 구분
+            }
+            
+            # 요청 파라미터
+            params = {
+                "CANO": self.account_no[:8],
+                "ACNT_PRDT_CD": self.account_no[8:],
+                "PDNO": "%" if stock_code else "%",  # 전종목일 경우 "%" 입력 (모의투자는 ""만 가능)
+                "ORD_STRT_DT": datetime.now().strftime("%Y%m%d"),  # 당일 날짜 (현지시각 기준)
+                "ORD_END_DT": datetime.now().strftime("%Y%m%d"),   # 당일 날짜 (현지시각 기준)
+                "SLL_BUY_DVSN": "00",  # 전체 (00:전체, 01:매도, 02:매수)
+                "CCLD_NCCS_DVSN": "00",  # 전체 (00:전체, 01:체결, 02:미체결)
+                "OVRS_EXCG_CD": "%" if stock_code else "%",  # 전종목일 경우 "%" 입력
+                "SORT_SQN": "DS",  # 정렬순서 (DS:정순, AS:역순)
+                "ORD_DT": "",  # Null 값 설정
+                "ORD_GNO_BRNO": "",  # Null 값 설정
+                "ODNO": "",  # Null 값 설정
+                "CTX_AREA_NK200": "",  # 연속조회키
+                "CTX_AREA_FK200": ""   # 연속조회검색조건
+            }
+            
+            # 모의투자계좌의 경우 일부 파라미터 조정
+            if self.is_paper_trading:
+                params["PDNO"] = ""  # 모의투자는 전체 조회만 가능
+                params["OVRS_EXCG_CD"] = ""  # 모의투자는 전체 조회만 가능
+                params["SLL_BUY_DVSN"] = "00"  # 모의투자는 전체 조회만 가능
+                params["CCLD_NCCS_DVSN"] = "00"  # 모의투자는 전체 조회만 가능
+            
+            # API 요청
+            response = requests.get(url, headers=headers, params=params)
+            time.sleep(self.api_call_interval)
+            
+            # 응답 확인
+            if response.status_code == 200:
+                data = response.json()
+                if data['rt_cd'] == '0':
+                    # 연속 조회 필요 여부 확인
+                    tr_cont = data.get('tr_cont', 'D')
+                    
+                    # 연속 조회가 필요한 경우 (tr_cont가 M인 경우)
+                    if tr_cont == 'M':
+                        next_data = self._get_remaining_executed_orders(
+                            url, headers, params,
+                            data['ctx_area_fk200'],
+                            data['ctx_area_nk200']
+                        )
+                        if next_data:
+                            # output 리스트 합치기
+                            data['output'].extend(next_data.get('output', []))
+                    
+                    return data
+                else:
+                    self.logger.error(f"당일 체결내역 조회 실패: {data['msg1']}")
+                    return None
+            else:
+                self.logger.error(f"당일 체결내역 조회 실패: {response.text}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"당일 체결내역 조회 중 오류 발생: {str(e)}")
+            return None
+    
+    def _get_remaining_executed_orders(self, url: str, headers: dict, params: dict, ctx_area_fk200: str, ctx_area_nk200: str) -> Optional[Dict]:
+        """연속 조회가 필요한 경우 나머지 체결 내역을 조회합니다."""
+        params['CTX_AREA_FK200'] = ctx_area_fk200
+        params['CTX_AREA_NK200'] = ctx_area_nk200
+        
+        response = requests.get(url, headers=headers, params=params)
+        time.sleep(self.api_call_interval)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data['rt_cd'] == '0':  # 정상 응답
+                # 연속 조회가 필요한 경우 재귀 호출
+                if data.get('tr_cont', 'D') == 'M':
+                    next_data = self._get_remaining_executed_orders(
+                        url, headers, params,
+                        data['ctx_area_fk200'],
+                        data['ctx_area_nk200']
+                    )
+                    if next_data:
+                        # output 리스트 합치기
+                        data['output'].extend(next_data.get('output', []))
+                return data
+            else:
+                self.logger.error(f"연속 체결 내역 조회 실패: {data['msg1']}")
+                return None
+        else:
+            self.logger.error(f"연속 체결 내역 조회 실패: {response.text}")
             return None 

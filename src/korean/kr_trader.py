@@ -77,14 +77,20 @@ class KRTrader(BaseTrader):
         return self.config['trading']['kor_market_start'] <= current_time <= self.config['trading']['kor_market_end']
     
     def _is_sell_time(self) -> bool:
-        """매도 시점인지 확인합니다. (9:30 ± 5분)"""
+        """매도 시점인지 확인합니다."""
         current_time = datetime.now().strftime('%H%M')
-        return "0925" <= current_time <= "0935"
+        sell_time = self.settings.get('sell_time', '0900')
+        # 매도 시간 전후 5분 이내
+        sell_time_int = int(sell_time)
+        return (sell_time_int - 5) <= int(current_time) <= (sell_time_int + 5)
     
     def _is_buy_time(self) -> bool:
-        """매수 시점인지 확인합니다. (13:20 ± 5분)"""
+        """매수 시점인지 확인합니다."""
         current_time = datetime.now().strftime('%H%M')
-        return "1315" <= current_time <= "1325"
+        buy_time = self.settings.get('buy_time', '1500')
+        # 매수 시간 전후 5분 이내
+        buy_time_int = int(buy_time)
+        return (buy_time_int - 5) <= int(current_time) <= (buy_time_int + 5)
     
     def calculate_ma(self, stock_code: str, period: int = 20) -> Optional[float]:
         """이동평균을 계산합니다."""
@@ -242,7 +248,7 @@ class KRTrader(BaseTrader):
                             self.logger.info(msg)
                             
                             if order_type == "SELL":
-                                self.add_daily_sold_stock(stock_code)
+                                self.sold_stocks_cache.append(stock_code)
             
             self.logger.info("포트폴리오 리밸런싱이 완료되었습니다.")
             
@@ -264,6 +270,8 @@ class KRTrader(BaseTrader):
                 self.market_open_executed = False
                 self.market_close_executed = False
                 self.is_first_execution = True
+                self.sold_stocks_cache = []  # 당일 매도 종목 캐시 초기화
+                self.sold_stocks_cache_time = 0  # 캐시 시간 초기화
                 self.logger.info(f"=== {self.execution_date} 매매 시작 ===")
             
             # 설정 로드 (최초 실행 시에만)
@@ -318,6 +326,24 @@ class KRTrader(BaseTrader):
                     'current_price': float(holding['prpr'])
                 }
             
+            # 당일 체결 내역 조회
+            executed_orders = self._retry_api_call(self.kr_api.get_today_executed_orders)
+            executed_buy_stocks = {}
+            
+            if executed_orders and 'output1' in executed_orders:
+                for order in executed_orders['output1']:
+                    # 매수 주문만 필터링
+                    if order['sll_buy_dvsn_cd'] == '02':  # 02: 매수
+                        stock_code = order['pdno']
+                        if stock_code not in executed_buy_stocks:
+                            executed_buy_stocks[stock_code] = {
+                                'name': order['prdt_name'],
+                                'quantity': 0,
+                                'amount': 0
+                            }
+                        executed_buy_stocks[stock_code]['quantity'] += int(order['ccld_qty'])
+                        executed_buy_stocks[stock_code]['amount'] += float(order['ccld_amt'])
+            
             # 개별 종목 매수 조건 체크
             buy_candidates = []
             
@@ -358,11 +384,20 @@ class KRTrader(BaseTrader):
                 if is_buy:
                     self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
                     
+                    # 이미 매수한 수량 확인
+                    already_bought_qty = 0
+                    if stock_code in executed_buy_stocks:
+                        already_bought_qty = executed_buy_stocks[stock_code]['quantity']
+                        self.logger.info(f"{stock_name}({stock_code}) - 당일 이미 매수한 수량: {already_bought_qty}주")
+                    
                     # 매수 금액 계산 (현금 * 배분비율)
                     buy_amount = cash * allocation_ratio
                     
                     # 매수 수량 계산 (매수금액 / 현재가)
                     buy_quantity = int(buy_amount / current_price)
+                    
+                    # 이미 매수한 수량 차감
+                    buy_quantity -= already_bought_qty
                     
                     if buy_quantity > 0:
                         buy_candidates.append({
@@ -371,10 +406,13 @@ class KRTrader(BaseTrader):
                             'quantity': buy_quantity,
                             'price': current_price,
                             'amount': buy_quantity * current_price,
-                            'allocation_ratio': allocation_ratio
+                            'allocation_ratio': allocation_ratio,
+                            'ma_period': ma_period,
+                            'ma_value': ma_value,
+                            'prev_close': prev_close
                         })
                     else:
-                        self.logger.info(f"{stock_name}({stock_code}) - 매수 수량이 0")
+                        self.logger.info(f"{stock_name}({stock_code}) - 추가 매수 수량이 0 또는 음수")
                 else:
                     if ma_value:
                         self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 미충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
@@ -413,11 +451,20 @@ class KRTrader(BaseTrader):
                 if is_buy:
                     self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
                     
+                    # 이미 매수한 수량 확인
+                    already_bought_qty = 0
+                    if stock_code in executed_buy_stocks:
+                        already_bought_qty = executed_buy_stocks[stock_code]['quantity']
+                        self.logger.info(f"{stock_name}({stock_code}) - 당일 이미 매수한 수량: {already_bought_qty}주")
+                    
                     # 매수 금액 계산 (현금 * 배분비율)
                     buy_amount = cash * allocation_ratio
                     
                     # 매수 수량 계산 (매수금액 / 현재가)
                     buy_quantity = int(buy_amount / current_price)
+                    
+                    # 이미 매수한 수량 차감
+                    buy_quantity -= already_bought_qty
                     
                     if buy_quantity > 0:
                         buy_candidates.append({
@@ -426,10 +473,13 @@ class KRTrader(BaseTrader):
                             'quantity': buy_quantity,
                             'price': current_price,
                             'amount': buy_quantity * current_price,
-                            'allocation_ratio': allocation_ratio
+                            'allocation_ratio': allocation_ratio,
+                            'ma_period': ma_period,
+                            'ma_value': ma_value,
+                            'prev_close': prev_close
                         })
                     else:
-                        self.logger.info(f"{stock_name}({stock_code}) - 매수 수량이 0")
+                        self.logger.info(f"{stock_name}({stock_code}) - 추가 매수 수량이 0 또는 음수")
                 else:
                     if ma_value:
                         self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 미충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
@@ -456,12 +506,18 @@ class KRTrader(BaseTrader):
             available_individual = max(0, max_individual - current_individual)
             available_pool = max(0, max_pool - current_pool)
             
+            self.logger.info(f"[국내 시장] 매수 후보 종목 수: {len(buy_candidates)}개")
+            self.logger.info(f"[국내 시장] 매수 가능 개별 종목 수: {available_individual}개, POOL 종목 수: {available_pool}개")
+            
             # 매수 실행
             for candidate in buy_candidates:
                 stock_code = candidate['code']
                 stock_name = candidate['name']
                 quantity = candidate['quantity']
                 price = candidate['price']
+                ma_period = candidate['ma_period']
+                ma_value = candidate['ma_value']
+                prev_close = candidate['prev_close']
                 
                 # 종목 유형 확인 (개별/POOL)
                 is_individual = stock_code in self.individual_stocks['종목코드'].values
@@ -486,6 +542,13 @@ class KRTrader(BaseTrader):
                 
                 if order_result and order_result['rt_cd'] == '0':
                     self.logger.info(f"{stock_name}({stock_code}) - 매수 주문 성공: 주문번호 {order_result['output']['ODNO']}")
+                    
+                    # 매수 상세 정보 로깅
+                    msg = f"매수 주문 실행: {stock_name}({stock_code}) {quantity}주 (지정가: {price:,.0f}원)"
+                    msg += f"\n- 매수 사유: 이동평균 상향돌파 (전일종가: {prev_close:,.0f}원 > {ma_period}일선: {ma_value:,.0f}원)"
+                    msg += f"\n- 매수 금액: {quantity * price:,.0f}원"
+                    msg += f"\n- 배분 비율: {candidate['allocation_ratio']*100:.1f}%"
+                    self.logger.info(msg)
                     
                     # 종목 유형에 따라 가용 종목 수 감소
                     if is_individual:
@@ -513,11 +576,16 @@ class KRTrader(BaseTrader):
                 self.logger.info("보유 종목이 없습니다.")
                 return
             
+            self.logger.info(f"[국내 시장] 보유 종목 수: {len(balance['output1'])}개")
+            
             # 보유 종목 매도 조건 체크
+            sell_candidates = []
+            
             for holding in balance['output1']:
                 stock_code = holding['pdno']
                 stock_name = holding['prdt_name']
                 quantity = int(holding['hldg_qty'])
+                current_price = float(holding['prpr'])
                 
                 if quantity <= 0:
                     continue
@@ -551,34 +619,68 @@ class KRTrader(BaseTrader):
                 if is_sell:
                     self.logger.info(f"{stock_name}({stock_code}) - 매도 조건 충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
                     
-                    # 매도 주문 실행
-                    self.logger.info(f"{stock_name}({stock_code}) - 매도 주문: {quantity}주 @ {current_price:,.0f}원")
-                    
-                    order_result = self._retry_api_call(
-                        self.kr_api.order_stock,
-                        stock_code,
-                        "SELL",
-                        quantity
-                    )
-                    
-                    if order_result and order_result['rt_cd'] == '0':
-                        self.logger.info(f"{stock_name}({stock_code}) - 매도 주문 성공: 주문번호 {order_result['output']['ODNO']}")
-                        # 당일 매도 종목에 추가
-                        self.add_daily_sold_stock(stock_code)
-                    else:
-                        self.logger.error(f"{stock_name}({stock_code}) - 매도 주문 실패")
+                    sell_candidates.append({
+                        'code': stock_code,
+                        'name': stock_name,
+                        'quantity': quantity,
+                        'price': current_price,
+                        'ma_period': ma_period,
+                        'ma_value': ma_value,
+                        'prev_close': prev_close
+                    })
                 else:
                     if ma_value:
                         self.logger.info(f"{stock_name}({stock_code}) - 매도 조건 미충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
                     else:
                         self.logger.info(f"{stock_name}({stock_code}) - 이동평균 계산 실패")
             
+            # 매도 후보가 없으면 종료
+            if not sell_candidates:
+                self.logger.info("매도 조건을 충족하는 종목이 없습니다.")
+                return
+            
+            self.logger.info(f"[국내 시장] 매도 후보 종목 수: {len(sell_candidates)}개")
+            
+            # 매도 실행
+            for candidate in sell_candidates:
+                stock_code = candidate['code']
+                stock_name = candidate['name']
+                quantity = candidate['quantity']
+                price = candidate['price']
+                ma_period = candidate['ma_period']
+                ma_value = candidate['ma_value']
+                prev_close = candidate['prev_close']
+                
+                # 매도 주문 실행
+                self.logger.info(f"{stock_name}({stock_code}) - 매도 주문: {quantity}주 @ {price:,.0f}원")
+                
+                order_result = self._retry_api_call(
+                    self.kr_api.order_stock,
+                    stock_code,
+                    "SELL",
+                    quantity
+                )
+                
+                if order_result and order_result['rt_cd'] == '0':
+                    self.logger.info(f"{stock_name}({stock_code}) - 매도 주문 성공: 주문번호 {order_result['output']['ODNO']}")
+                    
+                    # 매도 상세 정보 로깅
+                    msg = f"매도 주문 실행: {stock_name}({stock_code}) {quantity}주 (지정가: {price:,.0f}원)"
+                    msg += f"\n- 매도 사유: 이동평균 하향돌파 (전일종가: {prev_close:,.0f}원 < {ma_period}일선: {ma_value:,.0f}원)"
+                    msg += f"\n- 매도 금액: {quantity * price:,.0f}원"
+                    self.logger.info(msg)
+                    
+                    # 캐시 초기화하여 다음 API 호출 시 최신 정보 조회하도록 함
+                    self.sold_stocks_cache_time = 0
+                else:
+                    self.logger.error(f"{stock_name}({stock_code}) - 매도 주문 실패")
+            
         except Exception as e:
             self.logger.error(f"매도 주문 실행 중 오류 발생: {str(e)}")
             raise
 
-    def _check_stop_conditions(self):
-        """스탑로스와 트레일링 스탑 조건을 체크합니다."""
+    def _check_stop_conditions(self) -> None:
+        """스탑로스 및 트레일링 스탑 조건을 확인합니다."""
         try:
             balance = self.kr_api.get_account_balance()
             if balance is None:
@@ -627,13 +729,14 @@ class KRTrader(BaseTrader):
                     total_balance = float(new_balance['output2'][0]['tot_evlu_amt'])
                     d2_deposit = float(new_balance['output2'][0]['dnca_tot_amt'])
                     
-                    msg = f"스탑로스 매도 실행: {name} {quantity}주 (시장가)"
+                    msg = f"스탑로스 매도 실행: {name} {quantity}주 (지정가)"
                     msg += f"\n- 매도 사유: 손실률 {loss_pct:.2f}% (스탑로스 {self.settings['stop_loss']}% 도달)"
-                    msg += f"\n- 매도 금액: {current_price * quantity:,.0f}원 (현재가 {current_price:,}원)"
-                    msg += f"\n- 매수 정보: 매수단가 {entry_price:,}원 / 평가손익 {(current_price - entry_price) * quantity:,.0f}원"
+                    msg += f"\n- 매도 금액: {current_price * quantity:,.0f}원 (현재가 {current_price:,.0f}원)"
+                    msg += f"\n- 매수 정보: 매수단가 {entry_price:,.0f}원 / 평가손익 {(current_price - entry_price) * quantity:,.0f}원"
                     msg += f"\n- 계좌 상태: 총평가금액 {total_balance:,.0f}원 / D+2예수금 {d2_deposit:,.0f}원"
                     self.logger.info(msg)
-                    self.add_daily_sold_stock(stock_code)  # 당일 매도 종목에 추가
+                    # 캐시 초기화하여 다음 API 호출 시 최신 정보 조회하도록 함
+                    self.sold_stocks_cache_time = 0
                 return True
             
             # 트레일링 스탑 체크
@@ -681,13 +784,14 @@ class KRTrader(BaseTrader):
                             total_balance = float(new_balance['output2'][0]['tot_evlu_amt'])
                             d2_deposit = float(new_balance['output2'][0]['dnca_tot_amt'])
                             
-                            msg = f"트레일링 스탑 매도 실행: {name} {quantity}주 (시장가)"
+                            msg = f"트레일링 스탑 매도 실행: {name} {quantity}주 (지정가)"
                             msg += f"\n- 매도 사유: 고점 대비 하락률 {drop_pct:.2f}% (트레일링 스탑 {self.settings['trailing_stop']}% 도달)"
-                            msg += f"\n- 매도 금액: {current_price * quantity:,.0f}원 (현재가 {current_price:,}원)"
-                            msg += f"\n- 매수 정보: 매수단가 {entry_price:,}원 / 평가손익 {(current_price - entry_price) * quantity:,.0f}원"
+                            msg += f"\n- 매도 금액: {current_price * quantity:,.0f}원 (현재가 {current_price:,.0f}원)"
+                            msg += f"\n- 매수 정보: 매수단가 {entry_price:,.0f}원 / 평가손익 {(current_price - entry_price) * quantity:,.0f}원"
                             msg += f"\n- 계좌 상태: 총평가금액 {total_balance:,.0f}원 / D+2예수금 {d2_deposit:,.0f}원"
                             self.logger.info(msg)
-                            self.add_daily_sold_stock(stock_code)  # 당일 매도 종목에 추가
+                            # 캐시 초기화하여 다음 API 호출 시 최신 정보 조회하도록 함
+                            self.sold_stocks_cache_time = 0
                         return True
             
             return False
@@ -696,6 +800,34 @@ class KRTrader(BaseTrader):
             self.logger.error(f"개별 종목 스탑 조건 체크 중 오류 발생: {str(e)}")
             return False 
 
+    def get_today_sold_stocks(self) -> List[str]:
+        """API를 통해 당일 매도한 종목 코드 목록을 조회합니다.
+        
+        Returns:
+            List[str]: 당일 매도한 종목 코드 목록
+        """
+        sold_stocks = []
+        try:
+            # 당일 체결 내역 조회
+            executed_orders = self._retry_api_call(self.kr_api.get_today_executed_orders)
+            
+            if executed_orders and 'output1' in executed_orders:
+                for order in executed_orders['output1']:
+                    # 매도 주문만 필터링 (01: 매도)
+                    if order['sll_buy_dvsn_cd'] == '01':
+                        stock_code = order['pdno']
+                        # 체결 수량이 있는 경우만 추가
+                        if int(order['tot_ccld_qty']) > 0:
+                            if stock_code not in sold_stocks:
+                                sold_stocks.append(stock_code)
+                                self.logger.debug(f"당일 매도 종목 확인: {order['prdt_name']}({stock_code})")
+            
+            return sold_stocks
+        except Exception as e:
+            self.logger.error(f"당일 매도 종목 조회 중 오류 발생: {str(e)}")
+            # 오류 발생 시 파일에 저장된 정보 반환
+            return super().get_today_sold_stocks()
+        
     def update_stock_report(self) -> None:
         """국내 주식 현황을 구글 스프레드시트에 업데이트합니다."""
         try:
@@ -734,4 +866,31 @@ class KRTrader(BaseTrader):
             
         except Exception as e:
             self.logger.error(f"국내 주식 현황 업데이트 실패: {str(e)}")
+            raise 
+            
+    def _get_holdings_sheet(self) -> str:
+        """주식현황 시트 이름을 반환합니다."""
+        return self.google_sheet.sheets['holdings_kr']  # 주식현황[KOR]
+        
+    def _update_holdings_sheet(self, holdings_data: list, holdings_sheet: str) -> None:
+        """주식현황 시트를 업데이트합니다."""
+        try:
+            # 마지막 업데이트 시간 갱신
+            now = datetime.now()
+            update_time = now.strftime("%Y-%m-%d %H:%M:%S")
+            self.google_sheet.update_last_update_time(update_time, holdings_sheet)
+            
+            # 에러 메시지 초기화
+            self.google_sheet.update_error_message("", holdings_sheet)
+            
+            # 보유 종목 리스트 업데이트 (기존 데이터 초기화 후 새로운 데이터 추가)
+            self.logger.info(f"국내 주식 현황 데이터 초기화 및 업데이트 시작 (총 {len(holdings_data)}개 종목)")
+            self.google_sheet.update_holdings(holdings_data, holdings_sheet)
+            
+            self.logger.info(f"국내 주식 현황 업데이트 완료 ({update_time})")
+            
+        except Exception as e:
+            error_msg = f"주식현황 시트 업데이트 실패: {str(e)}"
+            self.logger.error(error_msg)
+            self.google_sheet.update_error_message(error_msg, holdings_sheet)
             raise 

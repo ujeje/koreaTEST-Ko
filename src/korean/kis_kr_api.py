@@ -4,7 +4,7 @@ import requests
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import pandas as pd
 from src.utils.token_manager import TokenManager
 import time
@@ -70,6 +70,125 @@ class KISKRAPIManager:
             return response.json()
         else:
             logging.error(f"주가 조회 실패: {response.text}")
+            return None
+    
+    def get_today_executed_orders(self, stock_code: str = None) -> Optional[Dict]:
+        """당일 체결된 주문 내역을 조회합니다.
+        
+        Args:
+            stock_code (str, optional): 종목코드. 지정하지 않으면 모든 종목의 체결 내역을 조회합니다.
+            
+        Returns:
+            Dict: 당일 체결 내역 정보를 담은 딕셔너리
+                - output1: 체결 내역 리스트
+                    - ord_dt: 주문일자
+                    - ord_gno_brno: 주문채번지점번호
+                    - odno: 주문번호
+                    - orgn_odno: 원주문번호
+                    - ord_dvsn_name: 주문구분명
+                    - sll_buy_dvsn_cd: 매도매수구분코드 (01:매도, 02:매수)
+                    - sll_buy_dvsn_cd_name: 매도매수구분코드명
+                    - pdno: 상품번호 (종목코드)
+                    - prdt_name: 상품명 (종목명)
+                    - ord_qty: 주문수량
+                    - ord_unpr: 주문단가
+                    - ord_tmd: 주문시각
+                    - tot_ccld_qty: 총체결수량
+                    - avg_prvs: 평균가 (총체결금액 / 총체결수량)
+                    - cncl_yn: 취소여부
+                    - tot_ccld_amt: 총체결금액
+                    - loan_dt: 대출일자
+                    - ord_dvsn_cd: 주문구분코드
+                - output2: 응답상세2
+                    - tot_ord_qty: 총주문수량
+                    - tot_ccld_qty: 총체결수량
+                    - pchs_avg_pric: 매입평균가격
+                    - tot_ccld_amt: 총체결금액
+                    - prsm_tlex_smtl: 추정제비용합계
+        """
+        access_token = self._check_token()
+        
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "authorization": f"Bearer {access_token}",
+            "appkey": self.api_key,
+            "appsecret": self.api_secret,
+            "tr_id": "VTTC8001R" if self.is_paper_trading else "TTTC8001R"  # 모의/실전 구분
+        }
+        
+        params = {
+            "CANO": self.account_no[:8],                          # 종합계좌번호
+            "ACNT_PRDT_CD": self.account_no[8:],                 # 계좌상품코드
+            "INQR_STRT_DT": datetime.now().strftime("%Y%m%d"),   # 조회시작일자
+            "INQR_END_DT": datetime.now().strftime("%Y%m%d"),    # 조회종료일자
+            "SLL_BUY_DVSN_CD": "00",  # 매도매수구분코드 (00:전체, 01:매도, 02:매수)
+            "INQR_DVSN": "00",        # 조회구분 (00:역순, 01:정순)
+            "PDNO": stock_code if stock_code else "",  # 상품번호 (종목코드, 공란:전체)
+            "CCLD_DVSN": "00",        # 체결구분 (00:전체, 01:체결, 02:미체결)
+            "ORD_GNO_BRNO": "",       # 주문채번지점번호 (Null 값 설정)
+            "ODNO": "",               # 주문번호 (Null 값 설정)
+            "INQR_DVSN_3": "00",      # 조회구분3 (00:전체, 01:현금, 02:융자, 03:대출, 04:대주)
+            "INQR_DVSN_1": "",        # 조회구분1 (공란:전체, 1:ELW, 2:프리보드)
+            "CTX_AREA_FK100": "",     # 연속조회검색조건
+            "CTX_AREA_NK100": ""      # 연속조회키
+        }
+        
+        response = requests.get(url, headers=headers, params=params)
+        time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data['rt_cd'] == '0':  # 정상 응답
+                # 연속조회 필요 여부 확인
+                tr_cont = data.get('tr_cont', 'D')
+                
+                # 연속 조회가 필요한 경우 (tr_cont가 M인 경우)
+                if tr_cont == 'M':
+                    next_data = self._get_remaining_executed_orders(
+                        url, headers, params,
+                        data['ctx_area_fk100'],
+                        data['ctx_area_nk100']
+                    )
+                    if next_data:
+                        # output1(체결내역) 리스트 합치기
+                        data['output1'].extend(next_data.get('output1', []))
+                
+                return data
+            else:
+                self.logger.error(f"체결 내역 조회 실패: {data['msg1']}")
+                return None
+        else:
+            self.logger.error(f"체결 내역 조회 실패: {response.text}")
+            return None
+    
+    def _get_remaining_executed_orders(self, url: str, headers: dict, params: dict, ctx_area_fk100: str, ctx_area_nk100: str) -> Optional[Dict]:
+        """연속 조회가 필요한 경우 나머지 체결 내역을 조회합니다."""
+        params['CTX_AREA_FK100'] = ctx_area_fk100
+        params['CTX_AREA_NK100'] = ctx_area_nk100
+        
+        response = requests.get(url, headers=headers, params=params)
+        time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data['rt_cd'] == '0':  # 정상 응답
+                # 연속 조회가 필요한 경우 재귀 호출
+                if data.get('tr_cont', 'D') == 'M':
+                    next_data = self._get_remaining_executed_orders(
+                        url, headers, params,
+                        data['ctx_area_fk100'],
+                        data['ctx_area_nk100']
+                    )
+                    if next_data:
+                        # output1(체결내역) 리스트 합치기
+                        data['output1'].extend(next_data.get('output1', []))
+                return data
+            else:
+                self.logger.error(f"연속 체결 내역 조회 실패: {data['msg1']}")
+                return None
+        else:
+            self.logger.error(f"연속 체결 내역 조회 실패: {response.text}")
             return None
     
     def get_account_balance(self) -> Optional[Dict]:

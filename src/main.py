@@ -49,9 +49,17 @@ def print_trading_settings(logger, market: str, trader) -> None:
     logger.info(f"최대 개별 종목 수: {trader.settings['max_individual_stocks']}개")
     logger.info(f"최대 POOL 종목 수: {trader.settings['max_pool_stocks']}개")
     logger.info(f"최소 현금 보유 비율: {trader.settings['min_cash_ratio']*100}%")
+    
     logger.info("\n=== 매수 타이밍 ===")
-    logger.info(f"시가 매수 비율: {trader.settings['market_open_ratio']*100}%")
-    logger.info(f"종가 매수 비율: {trader.settings['market_close_ratio']*100}%")
+    if market == "KOR":
+        # 한국 시장은 매수/매도 시간 출력
+        logger.info(f"매수 시간: {trader.settings['buy_time']}")
+        logger.info(f"매도 시간: {trader.settings['sell_time']}")
+    else:
+        # 미국 시장은 시가/종가 매수 비율 출력
+        logger.info(f"시가 매수 비율: {trader.settings['market_open_ratio']*100}%")
+        logger.info(f"종가 매수 비율: {trader.settings['market_close_ratio']*100}%")
+    
     logger.info("\n=== 스탑로스/트레일링 스탑 설정 ===")
     logger.info(f"스탑로스: {trader.settings['stop_loss']}%")
     logger.info(f"트레일링 시작: {trader.settings['trailing_start']}%")

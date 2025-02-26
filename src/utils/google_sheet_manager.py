@@ -389,10 +389,17 @@ class GoogleSheetManager:
     def update_holdings(self, values: list, holdings_sheet: str) -> None:
         """보유 종목 리스트를 갱신합니다."""
         try:
-            self.update_range(
-                f"{holdings_sheet}!{self.coordinates['holdings']['stock_list']}", 
-                values
-            )
+            # 보유 종목 리스트 영역 초기화
+            range_name = f"{holdings_sheet}!{self.coordinates['holdings']['stock_list']}"
+            self.sheet.values().clear(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name
+            ).execute()
+            
+            self.logger.debug(f"보유 종목 리스트 영역 초기화 완료: {range_name}")
+            
+            # 새로운 보유 종목 리스트 업데이트
+            self.update_range(range_name, values)
         except Exception as e:
             self.logger.error(f"보유 종목 리스트 갱신 실패: {str(e)}")
         
