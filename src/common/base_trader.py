@@ -45,9 +45,9 @@ class BaseTrader:
         # 디렉토리 생성
         os.makedirs('logs', exist_ok=True)
         
-        # 로거 설정
+        # 로거 설정sell_conditions
         self.logger = setup_logger(market_type, self.config)
-    
+        
     def send_discord_message(self, message: str, error: bool = False) -> None:
         """디스코드로 메시지를 전송합니다."""
         try:
@@ -66,7 +66,7 @@ class BaseTrader:
         if elapsed < self.api_call_interval:
             time.sleep(self.api_call_interval - elapsed)
         self.last_api_call = time.time()
-    
+
     def _retry_api_call(self, func, *args, **kwargs) -> Optional[Dict]:
         """API 호출을 재시도합니다."""
         for attempt in range(self.max_retries):

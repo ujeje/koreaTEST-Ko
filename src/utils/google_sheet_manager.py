@@ -66,7 +66,6 @@ class GoogleSheetManager:
             ranges = [
                 f"{settings_sheet}!{self.coordinates['settings']['max_individual_stocks']}",
                 f"{settings_sheet}!{self.coordinates['settings']['max_pool_stocks']}",
-                f"{settings_sheet}!{self.coordinates['settings']['min_cash_ratio']}",
                 f"{settings_sheet}!{self.coordinates['settings']['stop_loss']}",
                 f"{settings_sheet}!{self.coordinates['settings']['trailing_start']}",
                 f"{settings_sheet}!{self.coordinates['settings']['trailing_stop']}",
@@ -100,26 +99,25 @@ class GoogleSheetManager:
             settings = {
                 'max_individual_stocks': int(value_ranges[0]['values'][0][0]) if value_ranges[0].get('values') else 5,
                 'max_pool_stocks': int(value_ranges[1]['values'][0][0]) if value_ranges[1].get('values') else 5,
-                'min_cash_ratio': float(value_ranges[2]['values'][0][0]) / 100 if value_ranges[2].get('values') else 0.3,
-                'stop_loss': float(value_ranges[3]['values'][0][0]) if value_ranges[3].get('values') else 5.0,
-                'trailing_start': float(value_ranges[4]['values'][0][0]) if value_ranges[4].get('values') else 10.0,
-                'trailing_stop': float(value_ranges[5]['values'][0][0]) if value_ranges[5].get('values') else 5.0,
-                'rebalancing_date': value_ranges[6]['values'][0][0] if value_ranges[6].get('values') else "",
-                'rebalancing_ratio': float(value_ranges[7]['values'][0][0]) / 100 if value_ranges[7].get('values') else 0.7,
+                'stop_loss': float(value_ranges[2]['values'][0][0]) if value_ranges[2].get('values') else 5.0,
+                'trailing_start': float(value_ranges[3]['values'][0][0]) if value_ranges[3].get('values') else 10.0,
+                'trailing_stop': float(value_ranges[4]['values'][0][0]) if value_ranges[4].get('values') else 5.0,
+                'rebalancing_date': value_ranges[5]['values'][0][0] if value_ranges[5].get('values') else "",
+                'rebalancing_ratio': float(value_ranges[6]['values'][0][0]) / 100 if value_ranges[6].get('values') else 0.7,
             }
             
             # 시장 유형에 따라 다른 설정 추가
             if market_type == "KOR":
                 # 국내 시장: 매수시간, 매도시간
                 settings.update({
-                    'buy_time': value_ranges[8]['values'][0][0] if value_ranges[8].get('values') else "0900",
-                    'sell_time': value_ranges[9]['values'][0][0] if value_ranges[9].get('values') else "1500"
+                    'buy_time': value_ranges[7]['values'][0][0] if value_ranges[7].get('values') else "0900",
+                    'sell_time': value_ranges[8]['values'][0][0] if value_ranges[8].get('values') else "1500"
                 })
             else:
                 # 미국 시장: 시가 매수 비율, 종가 매수 비율
                 settings.update({
-                    'market_open_ratio': float(value_ranges[8]['values'][0][0]) / 100 if value_ranges[8].get('values') else 0.7,
-                    'market_close_ratio': float(value_ranges[9]['values'][0][0]) / 100 if value_ranges[9].get('values') else 0.3
+                    'market_open_ratio': float(value_ranges[7]['values'][0][0]) / 100 if value_ranges[7].get('values') else 0.7,
+                    'market_close_ratio': float(value_ranges[8]['values'][0][0]) / 100 if value_ranges[8].get('values') else 0.3
                 })
             
             return settings
@@ -130,7 +128,6 @@ class GoogleSheetManager:
             default_settings = {
                 'max_individual_stocks': 5,
                 'max_pool_stocks': 5,
-                'min_cash_ratio': 0.3,
                 'stop_loss': 5.0,
                 'trailing_start': 10.0,
                 'trailing_stop': 5.0,
@@ -148,7 +145,7 @@ class GoogleSheetManager:
                     'market_open_ratio': 0.7,
                     'market_close_ratio': 0.3
                 })
-                
+            
             return default_settings
     
     def _parse_date(self, date_str) -> str:

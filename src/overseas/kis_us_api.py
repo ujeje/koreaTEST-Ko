@@ -608,8 +608,8 @@ class KISUSAPIManager:
                 "CANO": self.account_no[:8],
                 "ACNT_PRDT_CD": self.account_no[8:],
                 "PDNO": "%" if stock_code else "%",  # 전종목일 경우 "%" 입력 (모의투자는 ""만 가능)
-                "ORD_STRT_DT": datetime.now().strftime("%Y%m%d"),  # 당일 날짜 (현지시각 기준)
-                "ORD_END_DT": datetime.now().strftime("%Y%m%d"),   # 당일 날짜 (현지시각 기준)
+                "ORD_STRT_DT": (datetime.now() - timedelta(hours=13)).strftime("%Y%m%d"),  # 미국 현지 시각 기준 당일 날짜 (한국시간 - 13시간)
+                "ORD_END_DT": (datetime.now() - timedelta(hours=13)).strftime("%Y%m%d"),   # 미국 현지 시각 기준 당일 날짜 (한국시간 - 13시간)
                 "SLL_BUY_DVSN": "00",  # 전체 (00:전체, 01:매도, 02:매수)
                 "CCLD_NCCS_DVSN": "00",  # 전체 (00:전체, 01:체결, 02:미체결)
                 "OVRS_EXCG_CD": "%" if stock_code else "%",  # 전종목일 경우 "%" 입력

@@ -48,7 +48,6 @@ def print_trading_settings(logger, market: str, trader) -> None:
     logger.info("\n=== 공통 매매 조건 설정값 ===")
     logger.info(f"최대 개별 종목 수: {trader.settings['max_individual_stocks']}개")
     logger.info(f"최대 POOL 종목 수: {trader.settings['max_pool_stocks']}개")
-    logger.info(f"최소 현금 보유 비율: {trader.settings['min_cash_ratio']*100}%")
     
     logger.info("\n=== 매수 타이밍 ===")
     if market == "KOR":
@@ -132,7 +131,7 @@ def main():
                         traders[market].load_settings()
                         logger.info(f"{market} 시장의 설정을 로드했습니다.")
                         # 설정 출력
-                        print_trading_settings(logger, market, traders[market])
+                        #print_trading_settings(logger, market, traders[market])
                     
                     # 활성화된 시장 업데이트
                     active_markets = current_active_markets
@@ -151,7 +150,8 @@ def main():
                     logger.info("현재 운영 중인 시장이 없습니다. 대기 중...")
                 
                 # 대기
-                time.sleep(60)
+                time.sleep(5)
+                # time.sleep(60)
                 
             except Exception as e:
                 logger.error(f"메인 루프 실행 중 오류 발생: {str(e)}")

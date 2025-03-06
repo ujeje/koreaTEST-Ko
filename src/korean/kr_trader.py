@@ -174,10 +174,6 @@ class KRTrader(BaseTrader):
                 self.logger.error("리밸런싱 비율이 설정되지 않았습니다.")
                 return
             
-            # 현금 보유 비율 계산
-            cash_ratio = (1 - rebalancing_ratio/100)
-            target_cash = total_balance * cash_ratio
-            
             # 보유 종목별 현재 비율 계산
             holdings = {}
             for holding in balance['output1']:
@@ -209,7 +205,8 @@ class KRTrader(BaseTrader):
                     
                     if target_ratio > 0:
                         # 전체 리밸런싱 비율에 맞춰 목표 비율 조정
-                        adjusted_target_ratio = target_ratio * (rebalancing_ratio/100)
+                        # rebalancing_ratio가 1일 때 100%를 의미하도록 수정
+                        adjusted_target_ratio = target_ratio * rebalancing_ratio
                         holdings[stock_code] = {
                             'name': holding['prdt_name'],
                             'current_price': current_price,
@@ -244,7 +241,6 @@ class KRTrader(BaseTrader):
                             msg += f"\n- 현재 비중: {info['current_ratio']:.1f}% → 목표 비중: {info['target_ratio']:.1f}%"
                             msg += f"\n- 거래: {quantity_diff}주 {'매도' if order_type == 'SELL' else '매수'}"
                             msg += f"\n- 금액: {value_diff:,.0f}원 (단가: {info['current_price']:,}원)"
-                            msg += f"\n- 목표 현금 비중: {cash_ratio*100:.1f}%"
                             self.logger.info(msg)
                             
                             if order_type == "SELL":
@@ -346,6 +342,8 @@ class KRTrader(BaseTrader):
             
             # 개별 종목 매수 조건 체크
             buy_candidates = []
+            individual_candidates = []
+            pool_candidates = []
             
             for _, row in self.individual_stocks.iterrows():
                 stock_code = row['종목코드']
@@ -360,7 +358,7 @@ class KRTrader(BaseTrader):
                     
                 # 당일 매도한 종목은 스킵
                 if self.is_sold_today(stock_code):
-                    self.logger.info(f"{stock_name}({stock_code}) - 당일 매도 종목")
+                    self.logger.info(f"{stock_name}({stock_code}) - 당일 매도 종목 재매수 제한")
                     continue
                 
                 # 매수 기간 체크 (설정된 경우)
@@ -400,7 +398,7 @@ class KRTrader(BaseTrader):
                     buy_quantity -= already_bought_qty
                     
                     if buy_quantity > 0:
-                        buy_candidates.append({
+                        individual_candidates.append({
                             'code': stock_code,
                             'name': stock_name,
                             'quantity': buy_quantity,
@@ -409,7 +407,8 @@ class KRTrader(BaseTrader):
                             'allocation_ratio': allocation_ratio,
                             'ma_period': ma_period,
                             'ma_value': ma_value,
-                            'prev_close': prev_close
+                            'prev_close': prev_close,
+                            'type': 'individual'
                         })
                     else:
                         self.logger.info(f"{stock_name}({stock_code}) - 추가 매수 수량이 0 또는 음수")
@@ -467,7 +466,7 @@ class KRTrader(BaseTrader):
                     buy_quantity -= already_bought_qty
                     
                     if buy_quantity > 0:
-                        buy_candidates.append({
+                        pool_candidates.append({
                             'code': stock_code,
                             'name': stock_name,
                             'quantity': buy_quantity,
@@ -476,7 +475,8 @@ class KRTrader(BaseTrader):
                             'allocation_ratio': allocation_ratio,
                             'ma_period': ma_period,
                             'ma_value': ma_value,
-                            'prev_close': prev_close
+                            'prev_close': prev_close,
+                            'type': 'pool'
                         })
                     else:
                         self.logger.info(f"{stock_name}({stock_code}) - 추가 매수 수량이 0 또는 음수")
@@ -486,13 +486,20 @@ class KRTrader(BaseTrader):
                     else:
                         self.logger.info(f"{stock_name}({stock_code}) - 이동평균 계산 실패")
             
+            # 개별 종목을 우선 처리하고, 그 다음 POOL 종목 처리
+            buy_candidates = individual_candidates + pool_candidates
+            
             # 매수 후보가 없으면 종료
             if not buy_candidates:
                 self.logger.info("매수 조건을 충족하는 종목이 없습니다.")
                 return
             
-            # 매수 후보 정렬 (배분 비율이 높은 순)
-            buy_candidates.sort(key=lambda x: x['allocation_ratio'], reverse=True)
+            # 매수 후보 정렬 (구글 스프레드시트 순서대로)
+            buy_candidates.sort(key=lambda x: (
+                self.individual_stocks[self.individual_stocks['종목코드'] == x['code']].index.min() 
+                if x['type'] == 'individual'
+                else self.pool_stocks[self.pool_stocks['종목코드'] == x['code']].index.min()
+            ))
             
             # 최대 종목 수 제한
             max_individual = self.settings['max_individual_stocks']
@@ -520,7 +527,7 @@ class KRTrader(BaseTrader):
                 prev_close = candidate['prev_close']
                 
                 # 종목 유형 확인 (개별/POOL)
-                is_individual = stock_code in self.individual_stocks['종목코드'].values
+                is_individual = candidate['type'] == 'individual'
                 
                 # 최대 종목 수 체크
                 if is_individual and available_individual <= 0:
@@ -529,6 +536,69 @@ class KRTrader(BaseTrader):
                 elif not is_individual and available_pool <= 0:
                     self.logger.info(f"{stock_name}({stock_code}) - 최대 POOL 종목 수 초과")
                     continue
+                
+                # 현금 확인
+                required_cash = quantity * price
+                
+                # 개별 종목이고 현금이 부족한 경우 POOL 종목 매도 시도
+                if is_individual and required_cash > cash:
+                    self.logger.info(f"현금 부족: 필요 금액 {required_cash:,.0f}원, 가용 금액 {cash:,.0f}원")
+                    self.logger.info(f"POOL 종목 매도를 통한 현금 확보 시도")
+                    
+                    # POOL 종목 보유 현황 확인
+                    pool_holdings = []
+                    for holding_code, holding_info in holdings.items():
+                        # POOL 종목인지 확인
+                        if holding_code in self.pool_stocks['종목코드'].values:
+                            pool_holdings.append({
+                                'code': holding_code,
+                                'name': holding_info['name'],
+                                'quantity': holding_info['quantity'],
+                                'price': holding_info['current_price'],
+                                'value': holding_info['quantity'] * holding_info['current_price']
+                            })
+                    
+                    # 구글 스프레드시트 순서의 역순으로 정렬 (마지막에 추가된 종목부터 매도)
+                    pool_codes = self.pool_stocks['종목코드'].tolist()
+                    pool_holdings.sort(key=lambda x: pool_codes.index(x['code']) if x['code'] in pool_codes else float('inf'), reverse=True)
+                    
+                    cash_to_secure = required_cash - cash
+                    secured_cash = 0
+                    sold_stocks = []
+                    
+                    # 필요한 현금을 확보할 때까지 POOL 종목 매도
+                    for pool_stock in pool_holdings:
+                        if secured_cash >= cash_to_secure:
+                            break
+                            
+                        sell_quantity = pool_stock['quantity']
+                        expected_cash = sell_quantity * pool_stock['price']
+                        
+                        # 매도 주문 실행
+                        result = self._retry_api_call(
+                            self.kr_api.order_stock,
+                            pool_stock['code'],
+                            "SELL",
+                            sell_quantity
+                        )
+                        
+                        if result and result['rt_cd'] == '0':
+                            secured_cash += expected_cash
+                            sold_stocks.append(f"{pool_stock['name']}({pool_stock['code']}) {sell_quantity}주 ({expected_cash:,.0f}원)")
+                            self.logger.info(f"현금 확보를 위한 POOL 종목 매도: {pool_stock['name']}({pool_stock['code']}) {sell_quantity}주 ({expected_cash:,.0f}원)")
+                    
+                    if secured_cash >= cash_to_secure:
+                        self.logger.info(f"현금 확보 성공: {secured_cash:,.0f}원 (필요 금액: {cash_to_secure:,.0f}원)")
+                        self.logger.info(f"매도한 POOL 종목: {', '.join(sold_stocks)}")
+                        
+                        # 매도 후 잠시 대기 (주문 체결 시간 고려)
+                        self._wait_for_api_call()
+                        
+                        # 현금 업데이트
+                        cash += secured_cash
+                    else:
+                        self.logger.info(f"현금 확보 실패: {secured_cash:,.0f}원 (필요 금액: {cash_to_secure:,.0f}원)")
+                        continue
                 
                 # 매수 주문 실행
                 self.logger.info(f"{stock_name}({stock_code}) - 매수 주문: {quantity}주 @ {price:,.0f}원")
@@ -549,6 +619,9 @@ class KRTrader(BaseTrader):
                     msg += f"\n- 매수 금액: {quantity * price:,.0f}원"
                     msg += f"\n- 배분 비율: {candidate['allocation_ratio']*100:.1f}%"
                     self.logger.info(msg)
+                    
+                    # 현금 차감
+                    cash -= quantity * price
                     
                     # 종목 유형에 따라 가용 종목 수 감소
                     if is_individual:
