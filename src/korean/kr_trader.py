@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 from src.common.base_trader import BaseTrader
 from src.korean.kis_kr_api import KISKRAPIManager
+from src.utils.trade_history_manager import TradeHistoryManager
 import time
 
 class KRTrader(BaseTrader):
@@ -18,6 +19,7 @@ class KRTrader(BaseTrader):
         """
         super().__init__(config_path, "KOR")
         self.kr_api = KISKRAPIManager(config_path)
+        self.trade_history = TradeHistoryManager("KOR")
         self.load_settings()
         self.last_api_call = 0
         self.api_call_interval = 0.2  # API 호출 간격 (초)
@@ -79,7 +81,7 @@ class KRTrader(BaseTrader):
     def _is_sell_time(self) -> bool:
         """매도 시점인지 확인합니다."""
         current_time = datetime.now().strftime('%H%M')
-        sell_time = self.settings.get('sell_time', '0900')
+        sell_time = self.settings.get('sell_time', '0930')  # 매도 시간을 09:30으로 설정
         # 매도 시간 전후 5분 이내
         sell_time_int = int(sell_time)
         return (sell_time_int - 5) <= int(current_time) <= (sell_time_int + 5)
@@ -87,7 +89,7 @@ class KRTrader(BaseTrader):
     def _is_buy_time(self) -> bool:
         """매수 시점인지 확인합니다."""
         current_time = datetime.now().strftime('%H%M')
-        buy_time = self.settings.get('buy_time', '1500')
+        buy_time = self.settings.get('buy_time', '1320')  # 매수 시간을 13:20으로 설정
         # 매수 시간 전후 5분 이내
         buy_time_int = int(buy_time)
         return (buy_time_int - 5) <= int(current_time) <= (buy_time_int + 5)
@@ -101,15 +103,38 @@ class KRTrader(BaseTrader):
             df = self.kr_api.get_daily_price(stock_code, start_date, end_date)
             if df is None or len(df) < period:
                 return None
-            
-            if 'stck_clpr' in df.columns:
-                df['종가'] = df['stck_clpr'].astype(float)
-            
-            ma = df['종가'].rolling(window=period).mean().iloc[-2]  # 전일 종가의 이동평균값값
+
+            ma = df['stck_clpr'].rolling(window=period).mean().iloc[-2]  # 전일 종가의 이동평균값값
             return ma
         except Exception as e:
             self.logger.error(f"{period}일 이동평균 계산 실패 ({stock_code}): {str(e)}")
             return None
+    
+    def get_highest_price_since_first_buy(self, stock_code: str) -> float:
+        """최초 매수일 이후의 최고가를 조회합니다."""
+        try:
+            # 최초 매수일 조회
+            first_buy_date = self.trade_history.get_first_buy_date(stock_code)
+            if not first_buy_date:
+                return 0
+            
+            # 최초 매수일부터 현재까지의 일별 시세 조회
+            start_date = datetime.strptime(first_buy_date, "%Y-%m-%d").strftime("%Y%m%d")
+            end_date = datetime.now().strftime("%Y%m%d")
+            
+            df = self.kr_api.get_daily_price(stock_code, start_date, end_date)
+            if df is None or len(df) == 0:
+                return 0
+            
+            # 최고가 계산
+            if 'stck_hgpr' in df.columns:
+                highest_price = df['stck_hgpr'].astype(float).max()
+            
+            return highest_price
+            
+        except Exception as e:
+            self.logger.error(f"최고가 조회 실패 ({stock_code}): {str(e)}")
+            return 0
     
     def check_buy_condition(self, stock_code: str, ma_period: int, prev_close: float) -> tuple[bool, Optional[float]]:
         """매수 조건을 확인합니다."""
@@ -245,6 +270,19 @@ class KRTrader(BaseTrader):
                             
                             if order_type == "SELL":
                                 self.sold_stocks_cache.append(stock_code)
+                            
+                            # 거래 내역 저장
+                            trade_data = {
+                                "trade_type": "REBALANCE",
+                                "stock_code": stock_code,
+                                "stock_name": info['name'],
+                                "quantity": quantity_diff,
+                                "price": info['current_price'],
+                                "total_amount": abs(value_diff),
+                                "reason": f"리밸런싱 {order_type} (현재 비중 {info['current_ratio']:.1f}% → 목표 비중 {info['target_ratio']:.1f}%)",
+                                "order_type": order_type
+                            }
+                            self.trade_history.add_trade(trade_data)
             
             self.logger.info("포트폴리오 리밸런싱이 완료되었습니다.")
             
@@ -276,9 +314,9 @@ class KRTrader(BaseTrader):
                 self.is_first_execution = False
             
             # 매수 시간 확인
-            buy_time = self.settings.get('buy_time', '0900')
+            buy_time = self.settings.get('buy_time', '1320')
             # 매도 시간 확인
-            sell_time = self.settings.get('sell_time', '1500')
+            sell_time = self.settings.get('sell_time', '0930')
             
             # 매수 시간에 매수 실행 (아직 실행되지 않은 경우)
             if current_time >= buy_time and not self.market_open_executed:
@@ -303,6 +341,11 @@ class KRTrader(BaseTrader):
     def _execute_buy_orders(self) -> None:
         """매수 주문을 실행합니다."""
         try:
+            # 매수 시점 확인
+            if not self._is_buy_time():
+                self.logger.info("현재는 매수 시점이 아닙니다.")
+                return
+            
             # 계좌 잔고 조회
             balance = self._retry_api_call(self.kr_api.get_account_balance)
             if not balance:
@@ -345,6 +388,8 @@ class KRTrader(BaseTrader):
             individual_candidates = []
             pool_candidates = []
             
+            self.logger.info("매수 조건 체크 시작")
+            
             for _, row in self.individual_stocks.iterrows():
                 stock_code = row['종목코드']
                 stock_name = row['종목명']
@@ -360,6 +405,27 @@ class KRTrader(BaseTrader):
                 if self.is_sold_today(stock_code):
                     self.logger.info(f"{stock_name}({stock_code}) - 당일 매도 종목 재매수 제한")
                     continue
+                
+                # 트레일링 스탑으로 매도된 종목 체크
+                trailing_stop_price = self.get_trailing_stop_sell_price(stock_code)
+                if trailing_stop_price is not None:
+                    # 현재가 조회
+                    price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
+                    if not price_data:
+                        self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
+                        continue
+                    
+                    current_price = float(price_data['output']['stck_prpr'])
+                    
+                    if current_price < trailing_stop_price:
+                        msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 종목 재매수 제한"
+                        msg += f"\n- 현재가({current_price:,}원)가 트레일링 스탑 매도가({trailing_stop_price:,}원) 미만"
+                        self.logger.info(msg)
+                        continue
+                    else:
+                        msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 종목 재매수 가능"
+                        msg += f"\n- 현재가({current_price:,}원)가 트레일링 스탑 매도가({trailing_stop_price:,}원) 이상"
+                        self.logger.info(msg)
                 
                 # 매수 기간 체크 (설정된 경우)
                 if 'buy_start_date' in row and 'buy_end_date' in row:
@@ -432,8 +498,29 @@ class KRTrader(BaseTrader):
                     
                 # 당일 매도한 종목은 스킵
                 if self.is_sold_today(stock_code):
-                    self.logger.info(f"{stock_name}({stock_code}) - 당일 매도 종목")
+                    self.logger.info(f"{stock_name}({stock_code}) - 당일 매도 종목 재매수 제한")
                     continue
+                
+                # 트레일링 스탑으로 매도된 종목 체크
+                trailing_stop_price = self.get_trailing_stop_sell_price(stock_code)
+                if trailing_stop_price is not None:
+                    # 현재가 조회
+                    price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
+                    if not price_data:
+                        self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
+                        continue
+                    
+                    current_price = float(price_data['output']['stck_prpr'])
+                    
+                    if current_price < trailing_stop_price:
+                        msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 종목 재매수 제한"
+                        msg += f"\n- 현재가({current_price:,}원)가 트레일링 스탑 매도가({trailing_stop_price:,}원) 미만"
+                        self.logger.info(msg)
+                        continue
+                    else:
+                        msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 종목 재매수 가능"
+                        msg += f"\n- 현재가({current_price:,}원)가 트레일링 스탑 매도가({trailing_stop_price:,}원) 이상"
+                        self.logger.info(msg)
                 
                 # 현재가 조회
                 price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
@@ -613,6 +700,20 @@ class KRTrader(BaseTrader):
                 if order_result and order_result['rt_cd'] == '0':
                     self.logger.info(f"{stock_name}({stock_code}) - 매수 주문 성공: 주문번호 {order_result['output']['ODNO']}")
                     
+                    # 거래 내역 저장
+                    trade_data = {
+                        "trade_type": "BUY",
+                        "stock_code": stock_code,
+                        "stock_name": stock_name,
+                        "quantity": quantity,
+                        "price": price,
+                        "total_amount": quantity * price,
+                        "ma_period": ma_period,
+                        "ma_value": ma_value,
+                        "reason": f"{ma_period}일선 매수 조건 충족 (현재가 {price:,.0f}원 > MA {ma_value:,.0f}원)"
+                    }
+                    self.trade_history.add_trade(trade_data)
+                    
                     # 매수 상세 정보 로깅
                     msg = f"매수 주문 실행: {stock_name}({stock_code}) {quantity}주 (지정가: {price:,.0f}원)"
                     msg += f"\n- 매수 사유: 이동평균 상향돌파 (전일종가: {prev_close:,.0f}원 > {ma_period}일선: {ma_value:,.0f}원)"
@@ -737,6 +838,22 @@ class KRTrader(BaseTrader):
                 if order_result and order_result['rt_cd'] == '0':
                     self.logger.info(f"{stock_name}({stock_code}) - 매도 주문 성공: 주문번호 {order_result['output']['ODNO']}")
                     
+                    # 거래 내역 저장
+                    trade_data = {
+                        "trade_type": "SELL",
+                        "stock_code": stock_code,
+                        "stock_name": stock_name,
+                        "quantity": quantity,
+                        "price": price,
+                        "total_amount": quantity * price,
+                        "ma_period": ma_period,
+                        "ma_value": ma_value,
+                        "reason": f"{ma_period}일선 매도 조건 충족 (현재가 {price:,.0f}원 < MA {ma_value:,.0f}원)",
+                        "profit_loss": (price - prev_close) * quantity,
+                        "profit_loss_pct": (price - prev_close) / prev_close * 100
+                    }
+                    self.trade_history.add_trade(trade_data)
+                    
                     # 매도 상세 정보 로깅
                     msg = f"매도 주문 실행: {stock_name}({stock_code}) {quantity}주 (지정가: {price:,.0f}원)"
                     msg += f"\n- 매도 사유: 이동평균 하향돌파 (전일종가: {prev_close:,.0f}원 < {ma_period}일선: {ma_value:,.0f}원)"
@@ -797,6 +914,20 @@ class KRTrader(BaseTrader):
                 # 스탑로스 매도
                 result = self._retry_api_call(self.kr_api.order_stock, stock_code, "SELL", quantity)
                 if result:
+                    # 거래 내역 저장
+                    trade_data = {
+                        "trade_type": "STOP_LOSS",
+                        "stock_code": stock_code,
+                        "stock_name": name,
+                        "quantity": quantity,
+                        "price": current_price,
+                        "total_amount": quantity * current_price,
+                        "reason": f"스탑로스 조건 충족 (손실률 {loss_pct:.2f}% <= {self.settings['stop_loss']}%)",
+                        "profit_loss": (current_price - entry_price) * quantity,
+                        "profit_loss_pct": loss_pct
+                    }
+                    self.trade_history.add_trade(trade_data)
+                    
                     # 잔고 재조회
                     new_balance = self.kr_api.get_account_balance()
                     total_balance = float(new_balance['output2'][0]['tot_evlu_amt'])
@@ -813,7 +944,8 @@ class KRTrader(BaseTrader):
                 return True
             
             # 트레일링 스탑 체크
-            highest_price = float(holding.get('highest_price', entry_price)) if holding.get('highest_price') and str(holding.get('highest_price')).strip() != '' else entry_price
+            # 최고가 조회
+            highest_price = self.get_highest_price_since_first_buy(stock_code)
             if highest_price <= 0:
                 highest_price = entry_price
             
@@ -822,7 +954,6 @@ class KRTrader(BaseTrader):
                 # 이전 신고가 대비 상승률 계산
                 price_change_pct = (current_price - highest_price) / highest_price * 100
                 profit_pct = (current_price - entry_price) / entry_price * 100
-                holding['highest_price'] = current_price
                 
                 # 목표가 초과 시에만 메시지 출력
                 if profit_pct >= self.settings['trailing_start']:
@@ -832,6 +963,9 @@ class KRTrader(BaseTrader):
                         msg += f"\n- 고점 대비 상승: +{price_change_pct:.1f}% (이전 고점 {highest_price:,}원 → 현재가 {current_price:,}원)"
                         msg += f"\n- 트레일링 스탑: 현재가 기준 {abs(self.settings['trailing_stop']):.1f}% 하락 시 매도"
                         self.logger.info(msg)
+                
+                # 현재가를 새로운 최고가로 사용
+                highest_price = current_price
             else:
                 # 목표가(trailing_start) 초과 여부 확인
                 profit_pct = (highest_price - entry_price) / entry_price * 100
@@ -850,8 +984,23 @@ class KRTrader(BaseTrader):
                         trade_msg = f"트레일링 스탑 조건 성립 - {name}({stock_code}): 고점대비 하락률 {drop_pct:.2f}% <= {self.settings['trailing_stop']}%"
                         self.logger.info(trade_msg)
                         
+                        # 트레일링 스탑 매도
                         result = self._retry_api_call(self.kr_api.order_stock, stock_code, "SELL", quantity)
                         if result:
+                            # 거래 내역 저장
+                            trade_data = {
+                                "trade_type": "TRAILING_STOP",
+                                "stock_code": stock_code,
+                                "stock_name": name,
+                                "quantity": quantity,
+                                "price": current_price,
+                                "total_amount": quantity * current_price,
+                                "reason": f"트레일링 스탑 조건 충족 (고점 {highest_price:,.0f}원 대비 하락률 {drop_pct:.2f}% <= {self.settings['trailing_stop']}%)",
+                                "profit_loss": (current_price - entry_price) * quantity,
+                                "profit_loss_pct": (current_price - entry_price) / entry_price * 100
+                            }
+                            self.trade_history.add_trade(trade_data)
+                            
                             # 잔고 재조회
                             new_balance = self.kr_api.get_account_balance()
                             total_balance = float(new_balance['output2'][0]['tot_evlu_amt'])
@@ -870,7 +1019,7 @@ class KRTrader(BaseTrader):
             return False
             
         except Exception as e:
-            self.logger.error(f"개별 종목 스탑 조건 체크 중 오류 발생: {str(e)}")
+            self.logger.error(f"스탑 조건 체크 중 오류 발생 ({stock_code}): {str(e)}")
             return False 
 
     def get_today_sold_stocks(self) -> List[str]:
@@ -967,3 +1116,26 @@ class KRTrader(BaseTrader):
             self.logger.error(error_msg)
             self.google_sheet.update_error_message(error_msg, holdings_sheet)
             raise 
+
+    def get_trailing_stop_sell_price(self, stock_code: str) -> Optional[float]:
+        """트레일링 스탑으로 매도된 종목의 매도 가격을 조회합니다.
+        
+        Args:
+            stock_code (str): 종목 코드
+            
+        Returns:
+            Optional[float]: 트레일링 스탑 매도 가격, 없으면 None
+        """
+        try:
+            # 거래 내역에서 해당 종목의 트레일링 스탑 매도 내역 조회
+            trailing_stop_trades = self.trade_history.get_trades_by_type_and_code("TRAILING_STOP", stock_code)
+            
+            if trailing_stop_trades and len(trailing_stop_trades) > 0:
+                # 가장 최근 트레일링 스탑 매도 가격 반환
+                latest_trade = trailing_stop_trades[-1]
+                return float(latest_trade.get("price", 0))
+            
+            return None
+        except Exception as e:
+            self.logger.error(f"트레일링 스탑 매도 가격 조회 중 오류 발생 ({stock_code}): {str(e)}")
+            return None 
