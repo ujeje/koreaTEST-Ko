@@ -150,8 +150,8 @@ def main():
                     logger.info("현재 운영 중인 시장이 없습니다. 대기 중...")
                 
                 # 대기
-                time.sleep(5)
-                # time.sleep(60)
+                # time.sleep(5)
+                time.sleep(60)
                 
             except Exception as e:
                 logger.error(f"메인 루프 실행 중 오류 발생: {str(e)}")

@@ -24,6 +24,10 @@ class KRTrader(BaseTrader):
         self.last_api_call = 0
         self.api_call_interval = 0.2  # API 호출 간격 (초)
         self.max_retries = 3  # 최대 재시도 횟수
+        
+        # 최고가 캐시 관련 변수 추가
+        self.highest_price_cache = {}  # 종목별 최고가 캐시
+        self.highest_price_cache_date = None  # 최고가 캐시 갱신 날짜
     
     def _wait_for_api_call(self):
         """API 호출 간격을 제어합니다."""
@@ -111,24 +115,87 @@ class KRTrader(BaseTrader):
             return None
     
     def get_highest_price_since_first_buy(self, stock_code: str) -> float:
-        """최초 매수일 이후의 최고가를 조회합니다."""
+        """최초 매수일 이후부터 어제까지의 최고가를 조회합니다."""
         try:
+            # 현재 날짜 확인
+            current_date = datetime.now().strftime("%Y-%m-%d")
+            
+            # 캐시가 오늘 날짜의 데이터이고, 해당 종목의 최고가가 캐시에 있으면 캐시된 값 반환
+            if (self.highest_price_cache_date == current_date and 
+                stock_code in self.highest_price_cache):
+                self.logger.debug(f"캐시된 최고가 사용: {stock_code}, {self.highest_price_cache[stock_code]}")
+                return self.highest_price_cache[stock_code]
+            
+            # 날짜가 변경되었으면 캐시 초기화
+            if self.highest_price_cache_date != current_date:
+                self.highest_price_cache = {}
+                self.highest_price_cache_date = current_date
+                self.logger.info(f"최고가 캐시 초기화 (날짜 변경: {current_date})")
+            
             # 최초 매수일 조회
             first_buy_date = self.trade_history.get_first_buy_date(stock_code)
             if not first_buy_date:
                 return 0
             
-            # 최초 매수일부터 현재까지의 일별 시세 조회
-            start_date = datetime.strptime(first_buy_date, "%Y-%m-%d").strftime("%Y%m%d")
-            end_date = datetime.now().strftime("%Y%m%d")
+            # 최초 매수일부터 어제까지의 일별 시세 조회
+            first_date = datetime.strptime(first_buy_date, "%Y-%m-%d")
+            # 어제 날짜 계산 (오늘 날짜에서 하루 빼기)
+            yesterday = datetime.now() - timedelta(days=1)
             
-            df = self.kr_api.get_daily_price(stock_code, start_date, end_date)
-            if df is None or len(df) == 0:
+            # 최초 매수일이 어제보다 늦은 경우(즉, 오늘 처음 매수한 경우) 최고가는 0으로 설정
+            if first_date > yesterday:
+                self.logger.debug(f"{stock_code}: 최초 매수일({first_date.strftime('%Y-%m-%d')})이 어제보다 늦어 최고가 계산 불가")
                 return 0
             
+            # API 제한(100일)을 고려하여 데이터 조회
+            all_data = []
+            current_end_date = yesterday
+            
+            while current_end_date >= first_date:
+                # 현재 조회 기간의 시작일 계산 (최대 100일)
+                current_start_date = current_end_date - timedelta(days=99)
+                
+                # 최초 매수일보다 이전으로 가지 않도록 조정
+                if current_start_date < first_date:
+                    current_start_date = first_date
+                
+                # 날짜 형식 변환
+                start_date_str = current_start_date.strftime("%Y%m%d")
+                end_date_str = current_end_date.strftime("%Y%m%d")
+                
+                self.logger.debug(f"일별 시세 조회: {stock_code}, {start_date_str} ~ {end_date_str}")
+                
+                # API 호출하여 데이터 조회
+                df = self.kr_api.get_daily_price(stock_code, start_date_str, end_date_str)
+                if df is not None and len(df) > 0:
+                    all_data.append(df)
+                
+                # 다음 조회 기간 설정 (하루 겹치지 않게)
+                current_end_date = current_start_date - timedelta(days=1)
+                
+                # 최초 매수일에 도달하면 종료
+                if current_end_date < first_date:
+                    break
+            
+            # 조회된 데이터가 없는 경우
+            if not all_data:
+                return 0
+            
+            # 모든 데이터 합치기
+            combined_df = pd.concat(all_data, ignore_index=True)
+            
+            # 중복 제거 (날짜 기준)
+            if 'stck_bsop_date' in combined_df.columns:
+                combined_df = combined_df.drop_duplicates(subset=['stck_bsop_date'])
+            
             # 최고가 계산
-            if 'stck_hgpr' in df.columns:
-                highest_price = df['stck_hgpr'].astype(float).max()
+            highest_price = 0
+            if 'stck_hgpr' in combined_df.columns:
+                highest_price = combined_df['stck_hgpr'].astype(float).max()
+            
+            # 캐시에 저장
+            self.highest_price_cache[stock_code] = highest_price
+            self.logger.debug(f"최고가 캐시 업데이트: {stock_code}, {highest_price}")
             
             return highest_price
             
@@ -966,6 +1033,15 @@ class KRTrader(BaseTrader):
                 
                 # 현재가를 새로운 최고가로 사용
                 highest_price = current_price
+                
+                # 최고가 캐시 업데이트 (당일 최고가 유지를 위해)
+                current_date = datetime.now().strftime("%Y-%m-%d")
+                if self.highest_price_cache_date != current_date:
+                    self.highest_price_cache = {}
+                    self.highest_price_cache_date = current_date
+                
+                self.highest_price_cache[stock_code] = current_price
+                self.logger.debug(f"최고가 캐시 업데이트: {stock_code}, {current_price:,.0f}원")
             else:
                 # 목표가(trailing_start) 초과 여부 확인
                 profit_pct = (highest_price - entry_price) / entry_price * 100
@@ -1071,25 +1147,66 @@ class KRTrader(BaseTrader):
                     holdings_data.append([
                         stock_code,                                           # 종목코드
                         holding['prdt_name'],                                # 종목명
-                        float(current_price_data['output']['stck_prpr']),   # 현재가
+                        round(float(current_price_data['output']['stck_prpr']), 2),   # 현재가
                         '',                                                  # 구분
-                        float(current_price_data['output']['prdy_ctrt']),   # 등락률
-                        float(holding['pchs_avg_pric']),                    # 평단가
-                        float(holding['evlu_pfls_rt']),                     # 수익률
+                        round(float(current_price_data['output']['prdy_ctrt']), 2),   # 등락률
+                        round(float(holding['pchs_avg_pric']), 2),                    # 평단가
+                        round(float(holding['evlu_pfls_rt']), 2),                     # 수익률
                         int(holding['hldg_qty']),                           # 보유량
-                        float(holding['evlu_pfls_amt']),                    # 평가손익
-                        float(holding['pchs_amt']),                         # 매입금액
-                        float(holding['evlu_amt'])                          # 평가금액
+                        round(float(holding['evlu_pfls_amt']), 2),                    # 평가손익
+                        round(float(holding['pchs_amt']), 2),                         # 매입금액
+                        round(float(holding['evlu_amt']), 2)                          # 평가금액
                     ])
             
             # 주식현황 시트 업데이트
             holdings_sheet = self._get_holdings_sheet()
             self._update_holdings_sheet(holdings_data, holdings_sheet)
             
+            # 요약 정보 계산
+            output2 = balance.get('output2', {})
+            
+            # 매입금액합계금액 - 보유 종목의 매입금액 합계
+            total_purchase_amount = float(output2.get('pchs_amt_smtl_amt', 0))
+            
+            # 평가금액합계금액 - 보유 종목의 평가금액 합계
+            total_eval_amount = float(output2.get('evlu_amt_smtl_amt', 0))
+            
+            # 총평가손익금액 - 보유 종목의 평가손익 합계
+            total_eval_profit_loss = float(output2.get('evlu_pfls_smtl_amt', 0))
+            
+            # 총자산금액 - 예수금 + 평가금액
+            total_asset_amount = float(output2.get('tot_evlu_amt', 0))
+            
+            # 총수익률 계산
+            total_profit_rate = 0
+            if total_purchase_amount > 0:
+                total_profit_rate = round((total_eval_profit_loss / total_purchase_amount) * 100, 2)
+            
+            # 요약 정보 반올림
+            total_purchase_amount = round(total_purchase_amount, 2)
+            total_eval_amount = round(total_eval_amount, 2)
+            total_eval_profit_loss = round(total_eval_profit_loss, 2)
+            total_asset_amount = round(total_asset_amount, 2)
+            
+            # 평가손익금액은 F6, 수익률은 G6에 출력
+            self.google_sheet.update_range(f"{holdings_sheet}!F6", [[total_eval_profit_loss]])
+            self.google_sheet.update_range(f"{holdings_sheet}!G6", [[total_profit_rate]])
+            
+            # 나머지 정보는 K5:K7에 출력
+            summary_data = [
+                [total_purchase_amount],  # 매입금액합계금액
+                [total_eval_amount],      # 평가금액합계금액
+                [total_asset_amount]      # 총자산금액
+            ]
+            
+            summary_range = f"{holdings_sheet}!K5:K7"
+            self.google_sheet.update_range(summary_range, summary_data)
+            self.logger.info("국내 주식 요약 정보 업데이트 완료")
+            
         except Exception as e:
             self.logger.error(f"국내 주식 현황 업데이트 실패: {str(e)}")
-            raise 
-            
+            raise
+        
     def _get_holdings_sheet(self) -> str:
         """주식현황 시트 이름을 반환합니다."""
         return self.google_sheet.sheets['holdings_kr']  # 주식현황[KOR]

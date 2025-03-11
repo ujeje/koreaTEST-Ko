@@ -51,14 +51,14 @@ google_sheet:
     
     # 주식현황 탭의 각 항목 좌표 (국내/미국 공통)
     holdings:
-      last_update: "C3"            # 마지막 업데이트 시간
-      error_message: "C4"          # 에러 메시지
-      stock_list: "A21:K50"        # 보유 종목 리스트 범위
+      last_update: "B5"            # 마지막 업데이트 시간
+      error_message: "B6"          # 에러 메시지
+      stock_list: "A11:K40"        # 보유 종목 리스트 범위
 
 # 매매 설정
 trading:
   market:
-    type: ['KOR']                    # 거래 시장 설정 (KOR: 한국, USA: 미국)  type: ['KOR', 'USA']
+    type: ['USA']                    # 거래 시장 설정 (KOR: 한국, USA: 미국)  type: ['KOR', 'USA']
   kor_market_start: '0900'           # 한국 장 시작 시간 (HHMM)
   kor_market_end: '1530'             # 한국 장 종료 시간 (HHMM)
   usa_timezone: 'America/New_York'   # 미국 시장 시간대

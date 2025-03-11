@@ -9,6 +9,7 @@ from src.common.base_trader import BaseTrader
 from src.overseas.kis_us_api import KISUSAPIManager
 from src.utils.trade_history_manager import TradeHistoryManager
 import time
+import exchange_calendars as xcals
 
 class USTrader(BaseTrader):
     """미국 주식 트레이더"""
@@ -26,6 +27,10 @@ class USTrader(BaseTrader):
         self.last_api_call = 0
         self.api_call_interval = 1.0  # API 호출 간격 (초)
         self.max_retries = 3  # 최대 재시도 횟수
+        
+        # 최고가 캐시 관련 변수 추가
+        self.highest_price_cache = {}  # 종목별 최고가 캐시
+        self.highest_price_cache_date = None  # 최고가 캐시 갱신 날짜
         
     def _wait_for_api_call(self):
         """API 호출 간격을 제어합니다."""
@@ -76,18 +81,41 @@ class USTrader(BaseTrader):
         """현재 시장 상태를 확인합니다."""
         current_time = datetime.now(self.us_timezone)
         
-        # 주말 체크
-        if current_time.weekday() >= 5:  # 5: 토요일, 6: 일요일
-            self.logger.info("주말은 거래가 불가능합니다.")
-            return False
+        # exchange_calendars 라이브러리를 사용하여 휴장일 확인
+        try:
+            # XNYS: 뉴욕 증권거래소 (NYSE) 캘린더 사용
+            nyse_calendar = xcals.get_calendar("XNYS")
+            current_date = current_time.strftime('%Y-%m-%d')
             
-        # 장 시작 시간과 종료 시간 체크
-        current_time_str = current_time.strftime('%H%M')
-        if not (self.config['trading']['usa_market_start'] <= current_time_str <= self.config['trading']['usa_market_end']):
-            self.logger.info("현재 미국 장 운영 시간이 아닙니다.")
-            return False
+            # 오늘이 거래일인지 확인
+            if not nyse_calendar.is_session(current_date):
+                self.logger.info(f"오늘({current_date})은 미국 증시 휴장일입니다.")
+                return False
+                
+            # 장 시작 시간과 종료 시간 체크
+            current_time_str = current_time.strftime('%H%M')
+            if not (self.config['trading']['usa_market_start'] <= current_time_str <= self.config['trading']['usa_market_end']):
+                self.logger.info("현재 미국 장 운영 시간이 아닙니다.")
+                return False
+                
+            return True
             
-        return True
+        except Exception as e:
+            self.logger.error(f"시장 상태 확인 중 오류 발생: {str(e)}")
+            
+            # 오류 발생 시 기존 방식으로 체크 (폴백)
+            # 주말 체크
+            if current_time.weekday() >= 5:  # 5: 토요일, 6: 일요일
+                self.logger.info("주말은 거래가 불가능합니다.")
+                return False
+                
+            # 장 시작 시간과 종료 시간 체크
+            current_time_str = current_time.strftime('%H%M')
+            if not (self.config['trading']['usa_market_start'] <= current_time_str <= self.config['trading']['usa_market_end']):
+                self.logger.info("현재 미국 장 운영 시간이 아닙니다.")
+                return False
+                
+            return True
         
     def _is_market_open_time(self) -> bool:
         """시가 매수 시점인지 확인합니다."""
@@ -124,23 +152,89 @@ class USTrader(BaseTrader):
             return None
     
     def get_highest_price_since_first_buy(self, stock_code: str) -> float:
-        """최초 매수일 이후의 최고가를 조회합니다."""
+        """최초 매수일 이후부터 어제까지의 최고가를 조회합니다."""
         try:
+            # 현재 날짜 확인
+            current_date = datetime.now(self.us_timezone).strftime("%Y-%m-%d")
+            
+            # 캐시가 오늘 날짜의 데이터이고, 해당 종목의 최고가가 캐시에 있으면 캐시된 값 반환
+            if (self.highest_price_cache_date == current_date and 
+                stock_code in self.highest_price_cache):
+                self.logger.debug(f"캐시된 최고가 사용: {stock_code}, {self.highest_price_cache[stock_code]}")
+                return self.highest_price_cache[stock_code]
+            
+            # 날짜가 변경되었으면 캐시 초기화
+            if self.highest_price_cache_date != current_date:
+                self.highest_price_cache = {}
+                self.highest_price_cache_date = current_date
+                self.logger.info(f"최고가 캐시 초기화 (날짜 변경: {current_date})")
+            
             # 최초 매수일 조회
             first_buy_date = self.trade_history.get_first_buy_date(stock_code)
             if not first_buy_date:
                 return 0
             
-            # 최초 매수일부터 현재까지의 일별 시세 조회
-            start_date = datetime.strptime(first_buy_date, "%Y-%m-%d").strftime("%Y%m%d")
-            end_date = datetime.now(self.us_timezone).strftime("%Y%m%d")
+            # 최초 매수일부터 어제까지의 일별 시세 조회
+            first_date = datetime.strptime(first_buy_date, "%Y-%m-%d")
+            # 어제 날짜 계산 (오늘 날짜에서 하루 빼기)
+            end_date = datetime.now(self.us_timezone) - timedelta(days=1)
             
-            df = self.us_api.get_daily_price(stock_code, start_date, end_date)
-            if df is None or len(df) == 0:
+            # 최초 매수일이 어제보다 늦은 경우(즉, 오늘 처음 매수한 경우) 최고가는 매수가로 설정
+            if first_date > end_date.replace(tzinfo=None):
+                self.logger.debug(f"{stock_code}: 최초 매수일({first_date.strftime('%Y-%m-%d')})이 어제보다 늦어 최고가 계산 불가")
                 return 0
             
+            # API 제한(100일)을 고려하여 데이터 조회
+            all_data = []
+            current_end_date = end_date
+            
+            # 날짜 비교 시 타임존 정보가 없는 경우 오류가 발생할 수 있으므로 타임존 정보 제거
+            while current_end_date.replace(tzinfo=None) >= first_date:
+                # 현재 조회 기간의 시작일 계산 (최대 100일)
+                current_start_date = current_end_date - timedelta(days=99)
+                
+                # 최초 매수일보다 이전으로 가지 않도록 조정
+                if current_start_date.replace(tzinfo=None) < first_date:
+                    current_start_date = first_date
+                
+                # 날짜 형식 변환
+                start_date_str = current_start_date.strftime("%Y%m%d")
+                end_date_str = current_end_date.strftime("%Y%m%d")
+                
+                self.logger.debug(f"일별 시세 조회: {stock_code}, {start_date_str} ~ {end_date_str}")
+                
+                # API 호출하여 데이터 조회
+                df = self.us_api.get_daily_price(stock_code, start_date_str, end_date_str)
+                if df is not None and len(df) > 0:
+                    all_data.append(df)
+                
+                # 다음 조회 기간 설정 (하루 겹치지 않게)
+                current_end_date = current_start_date - timedelta(days=1)
+                
+                # 최초 매수일에 도달하면 종료
+                if current_end_date.replace(tzinfo=None) < first_date:
+                    break
+            
+            # 조회된 데이터가 없는 경우
+            if not all_data:
+                return 0
+            
+            # 모든 데이터 합치기
+            combined_df = pd.concat(all_data, ignore_index=True)
+            
+            # 중복 제거 (날짜 기준)
+            combined_df = combined_df.drop_duplicates(subset=['xymd'])
+            
+            # 최초 매수일부터 어제까지의 데이터만 필터링
+            combined_df = combined_df[(combined_df['xymd'] >= pd.to_datetime(first_buy_date, format='%Y-%m-%d')) & 
+                                     (combined_df['xymd'] <= pd.to_datetime(end_date.strftime('%Y-%m-%d')))]
+            
             # 최고가 계산
-            highest_price = df['high'].astype(float).max()
+            highest_price = combined_df['high'].astype(float).max()
+            
+            # 캐시에 저장
+            self.highest_price_cache[stock_code] = highest_price
+            self.logger.debug(f"최고가 캐시 업데이트: {stock_code}, {highest_price}")
             
             return highest_price
             
@@ -776,40 +870,44 @@ class USTrader(BaseTrader):
                             available_cash = float(buyable_data['output']['frcr_ord_psbl_amt1'])
                         else:
                             self.logger.info(f"현금 확보 실패: ${secured_cash:.2f} (필요 금액: ${cash_to_secure:.2f})")
-                            return
+                            # 현금 확보 실패 시에도 계속 진행 (남은 현금으로 최대한 매수)
+                            self.logger.info(f"남은 현금으로 최대한 매수 시도")
                     
-                    if total_quantity > 0:
-                        # 시장가 매수 (설정된 비율만큼)
-                        market_quantity = int(total_quantity * self.settings['market_open_ratio'])
-                        if market_quantity > 0:
-                            # 매수 시 지정가의 1% 높게 설정하여 시장가처럼 거래
-                            buy_price = current_price * 1.01
+                    # 현금 부족 시에도 가능한 최대 수량 계산
+                    if available_cash < required_cash:
+                        # 시가 매수 수량 재계산 (가용 현금 기준)
+                        market_quantity = int(available_cash / current_price)
+                        self.logger.info(f"현금 부족으로 매수 수량 조정: {total_quantity} -> {market_quantity}주 (시가 매수)")
+                    
+                    if market_quantity > 0:
+                        # 매수 시 지정가의 1% 높게 설정하여 시장가처럼 거래
+                        buy_price = current_price * 1.01
+                        
+                        result = self._retry_api_call(self.us_api.order_stock, stock_code, "BUY", market_quantity, buy_price)
+                        if result:
+                            msg = f"매수 주문 실행: {row['종목명']}({stock_code}) {market_quantity}주 (지정가: ${current_price:,.2f})"
+                            msg += f"\n- 매수 사유: 이동평균 상향돌파"
+                            msg += f"\n- 매수 정보: 주문가 ${current_price:,.2f} / 총금액 ${current_price * market_quantity:,.2f}"
+                            msg += f"\n- 배분비율: {allocation_ratio*100}% (총자산 ${total_assets:,.2f} 중 ${buy_amount:,.2f})"
+                            msg += f"\n- 이동평균: {ma_period}일선 ${ma:.2f} < 전일종가 ${prev_close:.2f}"
+                            msg += f"\n- 계좌 상태: 총평가금액 ${total_assets:,.2f}"
+                            msg += f"\n- 종가 매수 예정: {total_quantity - market_quantity}주 (전체 목표 수량의 {self.settings['market_close_ratio']*100:.0f}%)"
+                            self.logger.info(msg)
                             
-                            result = self._retry_api_call(self.us_api.order_stock, stock_code, "BUY", market_quantity, buy_price)
-                            if result:
-                                msg = f"매수 주문 실행: {row['종목명']}({stock_code}) {market_quantity}주 (지정가: ${current_price:,.2f})"
-                                msg += f"\n- 매수 사유: 이동평균 상향돌파"
-                                msg += f"\n- 매수 정보: 주문가 ${current_price:,.2f} / 총금액 ${current_price * market_quantity:,.2f}"
-                                msg += f"\n- 배분비율: {allocation_ratio*100}% (총자산 ${total_assets:,.2f} 중 ${buy_amount:,.2f})"
-                                msg += f"\n- 이동평균: {ma_period}일선 ${ma:.2f} < 전일종가 ${prev_close:.2f}"
-                                msg += f"\n- 계좌 상태: 총평가금액 ${total_assets:,.2f}"
-                                msg += f"\n- 종가 매수 예정: {total_quantity - market_quantity}주 (전체 목표 수량의 {self.settings['market_close_ratio']*100:.0f}%)"
-                                self.logger.info(msg)
-                                
-                                # 거래 내역 저장
-                                trade_data = {
-                                    "trade_type": "BUY",
-                                    "stock_code": stock_code,
-                                    "stock_name": row['종목명'],
-                                    "quantity": market_quantity,
-                                    "price": current_price,
-                                    "total_amount": current_price * market_quantity,
-                                    "ma_period": ma_period,
-                                    "ma_value": ma,
-                                    "reason": f"이동평균 상향돌파 (전일 종가 ${prev_close:.2f} > MA${ma_period} ${ma:.2f})",
-                                    "allocation_ratio": allocation_ratio
-                                }
-                                self.trade_history.add_trade(trade_data)
+                            # 거래 내역 저장
+                            trade_data = {
+                                "trade_type": "BUY",
+                                "stock_code": stock_code,
+                                "stock_name": row['종목명'],
+                                "quantity": market_quantity,
+                                "price": current_price,
+                                "total_amount": current_price * market_quantity,
+                                "ma_period": ma_period,
+                                "ma_value": ma,
+                                "reason": f"이동평균 상향돌파 (전일 종가 ${prev_close:.2f} > MA${ma_period} ${ma:.2f})",
+                                "allocation_ratio": allocation_ratio
+                            }
+                            self.trade_history.add_trade(trade_data)
             
             # 종가 매수 처리
             elif is_market_close:
@@ -944,13 +1042,41 @@ class USTrader(BaseTrader):
                             }
                             self.trade_history.add_trade(trade_data)
                         
-                    # 충분한 현금을 확보하지 못한 경우 종가 매수 취소
+                    # 충분한 현금을 확보하지 못한 경우에도 가능한 최대 수량으로 매수 진행
                     if secured_cash < cash_to_secure:
-                        self.logger.info(f"종가 매수 취소: {row['종목명']}({stock_code}) - 충분한 현금 확보 실패 (필요: ${cash_to_secure:.2f}, 확보: ${secured_cash:.2f})")
-                        return
+                        self.logger.info(f"종가 매수 - 충분한 현금 확보 실패 (필요: ${cash_to_secure:.2f}, 확보: ${secured_cash:.2f})")
+                        self.logger.info(f"종가 매수 - 남은 현금으로 최대한 매수 시도")
+                        
+                        # 주문가능금액 다시 확인
+                        buyable_data = self._retry_api_call(self.us_api.get_psbl_amt, stock_code)
+                        if buyable_data is None:
+                            return
+                        available_cash = float(buyable_data['output']['frcr_ord_psbl_amt1'])
+                        
+                        # 가능한 최대 수량 재계산
+                        additional_quantity = int(available_cash / current_price)
+                        if additional_quantity <= 0:
+                            self.logger.info(f"종가 매수 취소: {row['종목명']}({stock_code}) - 매수 가능 수량 없음")
+                            return
                     else:
                         self.logger.info(f"종가 매수 - 현금 확보 성공: ${secured_cash:.2f} (필요: ${cash_to_secure:.2f})")
                         self.logger.info(f"종가 매수 - 매도한 POOL 종목: {', '.join(sold_stocks)}")
+                        
+                        # 주문가능금액 다시 확인
+                        buyable_data = self._retry_api_call(self.us_api.get_psbl_amt, stock_code)
+                        if buyable_data is None:
+                            return
+                        available_cash = float(buyable_data['output']['frcr_ord_psbl_amt1'])
+                
+                # 현금 부족 시에도 가능한 최대 수량 계산
+                if available_cash < required_cash:
+                    # 종가 매수 수량 재계산 (가용 현금 기준)
+                    additional_quantity = int(available_cash / current_price)
+                    self.logger.info(f"종가 매수 - 현금 부족으로 매수 수량 조정: {market_close_quantity} -> {additional_quantity}주")
+                    
+                    if additional_quantity <= 0:
+                        self.logger.info(f"종가 매수 취소: {row['종목명']}({stock_code}) - 매수 가능 수량 없음")
+                        return
                 
                 # 종가 매수 실행
                 # 매수 시 지정가의 1% 높게 설정하여 시장가처럼 거래
@@ -1006,7 +1132,8 @@ class USTrader(BaseTrader):
     def _check_stop_conditions_for_stock(self, holding: Dict, current_price: float) -> bool:
         """개별 종목의 스탑로스와 트레일링 스탑 조건을 체크합니다."""
         try:
-            stock_code = holding['ovrs_pdno']
+            exchange = holding.get('ovrs_excg_cd', '')  # NASD, NYSE, AMEX
+            stock_code = f"{holding['ovrs_pdno']}.{exchange}"
             entry_price = float(holding.get('pchs_avg_pric', 0)) if holding.get('pchs_avg_pric') and str(holding.get('pchs_avg_pric')).strip() != '' else 0
             quantity = int(holding.get('ovrs_cblc_qty', 0)) if holding.get('ovrs_cblc_qty') and str(holding.get('ovrs_cblc_qty')).strip() != '' else 0
             name = holding.get('ovrs_item_name', stock_code)
@@ -1086,6 +1213,15 @@ class USTrader(BaseTrader):
                 
                 # 현재가를 새로운 최고가로 사용
                 highest_price = current_price
+                
+                # 최고가 캐시 업데이트 (당일 최고가 유지를 위해)
+                current_date = datetime.now(self.us_timezone).strftime("%Y-%m-%d")
+                if self.highest_price_cache_date != current_date:
+                    self.highest_price_cache = {}
+                    self.highest_price_cache_date = current_date
+                
+                self.highest_price_cache[stock_code] = current_price
+                self.logger.debug(f"최고가 캐시 업데이트: {stock_code}, ${current_price:.2f}")
             else:
                 # 목표가(trailing_start) 초과 여부 확인
                 profit_pct = (highest_price - entry_price) / entry_price * 100
@@ -1137,14 +1273,19 @@ class USTrader(BaseTrader):
     def update_stock_report(self) -> None:
         """미국 주식 현황을 구글 스프레드시트에 업데이트합니다."""
         try:
-            # 계좌 잔고 조회
-            balance = self.us_api.get_account_balance()
+            # 계좌 잔고 조회 (inquire-present-balance API 사용)
+            balance = self.us_api.get_total_balance()
             if balance is None:
+                raise Exception("계좌 잔고 조회 실패")
+            
+            # 기존 get_account_balance API로 보유 종목 데이터 가져오기
+            account_balance = self.us_api.get_account_balance()
+            if account_balance is None:
                 raise Exception("계좌 잔고 조회 실패")
             
             # 보유 종목 데이터 생성
             holdings_data = []
-            for holding in balance['output1']:
+            for holding in account_balance['output1']:
                 if int(holding.get('ovrs_cblc_qty', 0)) <= 0:
                     continue
                 
@@ -1155,24 +1296,70 @@ class USTrader(BaseTrader):
                     holdings_data.append([
                         holding['ovrs_pdno'],                                           # 종목코드
                         holding['ovrs_item_name'],                           # 종목명
-                        float(current_price_data['output']['last']),         # 현재가
+                        round(float(current_price_data['output']['last']), 2),         # 현재가
                         '',                                                  # 구분
-                        float(current_price_data['output']['rate']),         # 등락률
-                        float(holding['pchs_avg_pric']),                     # 평단가
-                        float(holding['evlu_pfls_rt']),                      # 수익률
+                        round(float(current_price_data['output']['rate']), 2),         # 등락률
+                        round(float(holding['pchs_avg_pric']), 2),                     # 평단가
+                        round(float(holding['evlu_pfls_rt']), 2),                      # 수익률
                         int(holding['ovrs_cblc_qty']),                       # 보유량
-                        float(holding['frcr_evlu_pfls_amt']),               # 평가손익
-                        float(holding['frcr_pchs_amt1']),                   # 매입금액
-                        float(holding['ovrs_stck_evlu_amt'])                # 평가금액
+                        round(float(holding['frcr_evlu_pfls_amt']), 2),               # 평가손익
+                        round(float(holding['frcr_pchs_amt1']), 2),                   # 매입금액
+                        round(float(holding['ovrs_stck_evlu_amt']), 2)                # 평가금액
                     ])
             
             # 주식현황 시트 업데이트
             holdings_sheet = self._get_holdings_sheet()
             self._update_holdings_sheet(holdings_data, holdings_sheet)
             
+            # 환율 정보 가져오기
+            exchange_rate = 1.0  # 기본값
+            
+            # output2에서 USD 통화에 대한 환율 정보 찾기
+            if 'output2' in balance and balance['output2']:
+                for currency_info in balance['output2']:
+                    if currency_info.get('crcy_cd') == 'USD':
+                        exchange_rate = float(currency_info.get('frst_bltn_exrt', 1.0))
+                        #self.logger.info(f"현재 환율: 1 USD = {exchange_rate} KRW")
+                        break
+            
+           
+            # inquire-present-balance API에서 제공하는 요약 정보 가져오기
+            output3 = balance.get('output3', [{}])
+            
+            # 매입금액합계금액 (pchs_amt_smtl) - 원화를 달러로 변환
+            total_purchase_amount = round(float(output3.get('pchs_amt_smtl', 0)) / exchange_rate, 2)
+            
+            # 평가금액합계금액 (evlu_amt_smtl) - 원화를 달러로 변환
+            total_eval_amount = round(float(output3.get('evlu_amt_smtl', 0)) / exchange_rate, 2)
+            
+            # 총평가손익금액 (tot_evlu_pfls_amt) - 원화를 달러로 변환
+            total_eval_profit_loss = round(float(output3.get('tot_evlu_pfls_amt', 0)) / exchange_rate, 2)
+            
+            # 총자산금액 (tot_asst_amt) - 원화를 달러로 변환
+            total_asset_amount = round(float(output3.get('tot_asst_amt', 0)) / exchange_rate, 2)
+            
+            # 총수익률 계산 (evlu_erng_rt1) - 퍼센트 값이므로 변환 불필요
+            total_profit_rate = round(float(output3.get('evlu_erng_rt1', 0)), 2)
+            
+            # 요약 정보 업데이트
+            # 평가손익금액은 F6, 수익률은 G6에 출력
+            self.google_sheet.update_range(f"{holdings_sheet}!F6", [[total_eval_profit_loss]])
+            self.google_sheet.update_range(f"{holdings_sheet}!G6", [[total_profit_rate]])
+            
+            # 나머지 정보는 K5:K7에 출력
+            summary_data = [
+                [total_purchase_amount],  # 매입금액합계금액 (달러)
+                [total_eval_amount],      # 평가금액합계금액 (달러)
+                [total_asset_amount]      # 총자산금액 (달러)               
+            ]
+            
+            summary_range = f"{holdings_sheet}!K5:K7"
+            self.google_sheet.update_range(summary_range, summary_data)
+            self.logger.info("미국 주식 요약 정보 업데이트 완료")
+            
         except Exception as e:
             self.logger.error(f"미국 주식 현황 업데이트 실패: {str(e)}")
-            raise 
+            raise
             
     def _get_holdings_sheet(self) -> str:
         """주식현황 시트 이름을 반환합니다."""

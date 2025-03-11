@@ -2,6 +2,7 @@ import os
 import json
 from datetime import datetime
 from typing import Dict, List, Optional, Any
+import pytz
 
 class TradeHistoryManager:
     """거래 내역을 JSON 파일로 저장하고 관리하는 클래스"""
@@ -15,6 +16,12 @@ class TradeHistoryManager:
         self.history_dir = os.path.join("data", "history")
         self.trade_history_file = os.path.join(self.history_dir, f"trade_history_{market_type.lower()}.json")
         self.stock_history_dir = os.path.join(self.history_dir, "stocks")
+        
+        # 시간대 설정
+        if self.market_type.upper() == "USA":
+            self.timezone = pytz.timezone("America/New_York")  # 미국 뉴욕 시간대
+        else:
+            self.timezone = pytz.timezone("Asia/Seoul")  # 한국 시간대
         
         # 디렉토리 생성
         os.makedirs(self.history_dir, exist_ok=True)
@@ -51,8 +58,10 @@ class TradeHistoryManager:
                 - profit_loss_pct: 손익률 (매도 시)
         """
         try:
-            # 현재 시간 추가
-            trade_data["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # 현재 시간을 해당 시장의 시간대로 변환하여 추가
+            now = datetime.now(pytz.UTC).astimezone(self.timezone)
+            trade_data["timestamp"] = now.strftime("%Y-%m-%d %H:%M:%S")
+            trade_data["timezone"] = self.timezone.zone  # 시간대 정보도 함께 저장
             
             # 거래 내역 파일 읽기
             with open(self.trade_history_file, 'r', encoding='utf-8') as f:
@@ -74,6 +83,11 @@ class TradeHistoryManager:
     def _update_stock_history(self, trade_data: Dict[str, Any]) -> None:
         """종목별 거래 내역을 업데이트합니다."""
         stock_code = trade_data["stock_code"]
+        
+        # 미국장의 경우 거래소 코드 제외 (코드.거래소 형식에서 코드만 추출)
+        if self.market_type.upper() == "USA" and "." in stock_code:
+            stock_code = stock_code.split(".")[0]
+        
         stock_history_file = os.path.join(self.stock_history_dir, f"{stock_code}.json")
         
         # 종목 거래 내역 파일이 없으면 생성
@@ -122,6 +136,10 @@ class TradeHistoryManager:
     
     def get_stock_history(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """종목별 거래 내역을 조회합니다."""
+        # 미국장의 경우 거래소 코드 제외 (코드.거래소 형식에서 코드만 추출)
+        if self.market_type.upper() == "USA" and "." in stock_code:
+            stock_code = stock_code.split(".")[0]
+            
         stock_history_file = os.path.join(self.stock_history_dir, f"{stock_code}.json")
         
         if not os.path.exists(stock_history_file):
