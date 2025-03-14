@@ -40,7 +40,7 @@ class BaseTrader:
         # 당일 매도 종목 캐시 관련 설정
         self.sold_stocks_cache = []
         self.sold_stocks_cache_time = 0  # 매도 종목 캐시 시간 (초 단위)
-        self.sold_stocks_cache_duration = 300  # 캐시 유효 시간 (5분)
+        self.sold_stocks_cache_duration = 60  # 캐시 유효 시간 (1분)
         
         # 디렉토리 생성
         os.makedirs('logs', exist_ok=True)

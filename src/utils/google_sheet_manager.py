@@ -103,7 +103,7 @@ class GoogleSheetManager:
                 'trailing_start': float(value_ranges[3]['values'][0][0]) if value_ranges[3].get('values') else 10.0,
                 'trailing_stop': float(value_ranges[4]['values'][0][0]) if value_ranges[4].get('values') else 5.0,
                 'rebalancing_date': value_ranges[5]['values'][0][0] if value_ranges[5].get('values') else "",
-                'rebalancing_ratio': float(value_ranges[6]['values'][0][0]) / 100 if value_ranges[6].get('values') else 0.7,
+                'rebalancing_ratio': float(value_ranges[6]['values'][0][0]) / 100 if value_ranges[6].get('values') else 1,
             }
             
             # 시장 유형에 따라 다른 설정 추가
@@ -132,7 +132,7 @@ class GoogleSheetManager:
                 'trailing_start': 10.0,
                 'trailing_stop': 5.0,
                 'rebalancing_date': "",
-                'rebalancing_ratio': 0.7,
+                'rebalancing_ratio': 1,
             }
             
             if market_type == "KOR":
@@ -450,4 +450,47 @@ class GoogleSheetManager:
             
         except HttpError as e:
             self.logger.error("범위 지우기 실패: %s", str(e))
-            raise Exception(f"범위 지우기 실패: {str(e)}") 
+            raise Exception(f"범위 지우기 실패: {str(e)}")
+            
+    def get_cell_value(self, cell: str, market_type: str = "KOR") -> str:
+        """특정 셀의 값을 가져옵니다.
+        
+        Args:
+            cell (str): 셀 주소 (예: "G8")
+            market_type (str): 시장 유형 (KOR/USA)
+            
+        Returns:
+            str: 셀 값 (없으면 빈 문자열)
+        """
+        try:
+            # 시장 유형에 따른 설정 시트 선택
+            if market_type == "KOR":
+                settings_sheet = self.config['google_sheet']['sheets']['settings_kr']
+            elif market_type == "USA":
+                settings_sheet = self.config['google_sheet']['sheets']['settings_us']
+            else:
+                raise ValueError(f"지원하지 않는 시장 유형입니다: {market_type}")
+                
+            # 셀 범위 지정
+            range_name = f"{settings_sheet}!{cell}"
+            
+            # 셀 값 조회
+            result = self.service.spreadsheets().values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name
+            ).execute()
+            
+            values = result.get('values', [])
+            
+            if not values:
+                self.logger.debug(f"셀 {cell}에 값이 없습니다.")
+                return ""
+                
+            return str(values[0][0]) if values[0] else ""
+            
+        except HttpError as error:
+            self.logger.error(f"셀 값 조회 실패: {error}")
+            return ""
+        except Exception as e:
+            self.logger.error(f"셀 값 조회 중 오류 발생: {e}")
+            return "" 

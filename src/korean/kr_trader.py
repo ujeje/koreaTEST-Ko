@@ -69,7 +69,57 @@ class KRTrader(BaseTrader):
             if 'trailing_stop' not in self.settings:
                 self.settings['trailing_stop'] = -3.0  # 기본값 3%
             
+            # 매수/매도 시간 설정 (G8, G9 셀에서 가져옴)
+            buy_time = self.google_sheet.get_cell_value("G8", market_type="KOR")
+            sell_time = self.google_sheet.get_cell_value("G9", market_type="KOR")
+            
+            # 시간 형식 확인 및 변환 (HH:MM -> HHMM)
+            if buy_time and ":" in buy_time:
+                buy_time = buy_time.replace(":", "")
+            if sell_time and ":" in sell_time:
+                sell_time = sell_time.replace(":", "")
+                
+            # 시간 형식 정규화 함수
+            def normalize_time(time_str):
+                if not time_str:
+                    return None
+                
+                # 콜론이 있는 경우 (H:M 형식)
+                if ":" in time_str:
+                    hour, minute = time_str.split(":")
+                    # 시간과 분이 한 자리인 경우 두 자리로 변환
+                    hour = hour.zfill(2)
+                    minute = minute.zfill(2)
+                    return hour + minute
+                
+                # 숫자만 있는 경우
+                if time_str.isdigit():
+                    # 3자리 이하인 경우 (예: 130 -> 0130)
+                    if len(time_str) <= 3:
+                        return time_str.zfill(4)
+                    return time_str
+                
+                return None
+            
+            # 시간 형식 정규화
+            normalized_buy_time = normalize_time(buy_time)
+            normalized_sell_time = normalize_time(sell_time)
+            
+            # 유효한 시간 형식인지 확인하고 설정
+            if normalized_buy_time and len(normalized_buy_time) == 4:
+                self.settings['buy_time'] = normalized_buy_time
+            else:
+                self.settings['buy_time'] = '1320'  # 기본값 13:20
+                self.logger.warning(f"유효하지 않은 매수 시간 형식: {buy_time}, 기본값 13:20으로 설정")
+                
+            if normalized_sell_time and len(normalized_sell_time) == 4:
+                self.settings['sell_time'] = normalized_sell_time
+            else:
+                self.settings['sell_time'] = '0930'  # 기본값 09:30
+                self.logger.warning(f"유효하지 않은 매도 시간 형식: {sell_time}, 기본값 09:30으로 설정")
+            
             self.logger.info(f"{self.market_type} 설정을 성공적으로 로드했습니다.")
+            self.logger.info(f"매수 시간: {self.settings['buy_time'][:2]}:{self.settings['buy_time'][2:]}, 매도 시간: {self.settings['sell_time'][:2]}:{self.settings['sell_time'][2:]}")
         except Exception as e:
             self.logger.error(f"{self.market_type} 설정 로드 실패: {str(e)}")
             raise
@@ -82,33 +132,74 @@ class KRTrader(BaseTrader):
         # 장 운영 시간 체크 (09:00 ~ 15:30)
         return self.config['trading']['kor_market_start'] <= current_time <= self.config['trading']['kor_market_end']
     
-    def _is_sell_time(self) -> bool:
-        """매도 시점인지 확인합니다."""
-        current_time = datetime.now().strftime('%H%M')
-        sell_time = self.settings.get('sell_time', '0930')  # 매도 시간을 09:30으로 설정
-        # 매도 시간 전후 5분 이내
-        sell_time_int = int(sell_time)
-        return (sell_time_int - 5) <= int(current_time) <= (sell_time_int + 5)
-    
-    def _is_buy_time(self) -> bool:
-        """매수 시점인지 확인합니다."""
-        current_time = datetime.now().strftime('%H%M')
-        buy_time = self.settings.get('buy_time', '1320')  # 매수 시간을 13:20으로 설정
-        # 매수 시간 전후 5분 이내
-        buy_time_int = int(buy_time)
-        return (buy_time_int - 5) <= int(current_time) <= (buy_time_int + 5)
-    
     def calculate_ma(self, stock_code: str, period: int = 20) -> Optional[float]:
         """이동평균을 계산합니다."""
         try:
             end_date = datetime.now().strftime("%Y%m%d")
-            start_date = (datetime.now() - timedelta(days=period*2)).strftime("%Y%m%d")
+            # 이동평균 계산을 위해 필요한 데이터 기간 (기본 2배로 설정)
+            required_days = period * 2
+            start_date = (datetime.now() - timedelta(days=required_days)).strftime("%Y%m%d")
             
-            df = self.kr_api.get_daily_price(stock_code, start_date, end_date)
-            if df is None or len(df) < period:
+            # API 제한(100일)을 고려하여 데이터 조회
+            all_data = []
+            current_end_date = datetime.now()
+            start_datetime = datetime.now() - timedelta(days=required_days)
+            
+            # 필요한 기간이 100일 이하인 경우 한 번에 조회
+            if required_days <= 100:
+                df = self.kr_api.get_daily_price(stock_code, start_date, end_date)
+                if df is None or len(df) < period:
+                    return None
+                    
+                ma = df['stck_clpr'].rolling(window=period).mean().iloc[-2]  # 전일 종가의 이동평균값
+                return ma
+            
+            # 필요한 기간이 100일 초과인 경우 분할 조회
+            while current_end_date >= start_datetime:
+                # 현재 조회 기간의 시작일 계산 (최대 100일)
+                current_start_date = current_end_date - timedelta(days=99)
+                
+                # 시작일보다 이전으로 가지 않도록 조정
+                if current_start_date < start_datetime:
+                    current_start_date = start_datetime
+                
+                # 날짜 형식 변환
+                current_start_date_str = current_start_date.strftime("%Y%m%d")
+                current_end_date_str = current_end_date.strftime("%Y%m%d")
+                
+                self.logger.debug(f"이동평균 계산을 위한 일별 시세 조회: {stock_code}, {current_start_date_str} ~ {current_end_date_str}")
+                
+                # API 호출하여 데이터 조회
+                df = self.kr_api.get_daily_price(stock_code, current_start_date_str, current_end_date_str)
+                if df is not None and len(df) > 0:
+                    all_data.append(df)
+                
+                # 다음 조회 기간 설정 (하루 겹치지 않게)
+                current_end_date = current_start_date - timedelta(days=1)
+                
+                # 시작일에 도달하면 종료
+                if current_end_date < start_datetime:
+                    break
+            
+            # 조회된 데이터가 없는 경우
+            if not all_data:
                 return None
-
-            ma = df['stck_clpr'].rolling(window=period).mean().iloc[-2]  # 전일 종가의 이동평균값값
+            
+            # 모든 데이터 합치기
+            combined_df = pd.concat(all_data, ignore_index=True)
+            
+            # 중복 제거 (날짜 기준)
+            if 'stck_bsop_date' in combined_df.columns:
+                combined_df = combined_df.drop_duplicates(subset=['stck_bsop_date'])
+                combined_df = combined_df.sort_values('stck_bsop_date', ascending=True).reset_index(drop=True)
+            
+            # 데이터가 충분한지 확인
+            if len(combined_df) < period:
+                self.logger.warning(f"{stock_code}: 이동평균 계산을 위한 데이터가 부족합니다. (필요: {period}일, 실제: {len(combined_df)}일)")
+                return None
+            
+            # 이동평균 계산
+            ma = combined_df['stck_clpr'].astype(float).rolling(window=period).mean().iloc[-2]  # 전일 종가의 이동평균값
             return ma
         except Exception as e:
             self.logger.error(f"{period}일 이동평균 계산 실패 ({stock_code}): {str(e)}")
@@ -218,33 +309,52 @@ class KRTrader(BaseTrader):
         return bool(prev_close < ma), ma
     
     def _is_rebalancing_day(self) -> bool:
-        """리밸런싱 실행 여부를 확인합니다."""
+        """리밸런싱 실행 여부를 확인합니다.
+        
+        리밸런싱 날짜 형식:
+        1. 년/월/일 (예: 2023/12/15) - 해당 년월일에 리밸런싱
+        2. 월/일 (예: 12/15) - 매년 해당 월일에 리밸런싱
+        3. 일 (예: 15) - 매월 해당 일자에 리밸런싱
+        """
         try:
             # 현재 시간 확인
             now = datetime.now()
-            current_time = now.strftime("%H%M")
             
             # 구글 시트에서 리밸런싱 일자 가져오기
             rebalancing_date = str(self.settings.get('rebalancing_date', ''))
             if not rebalancing_date:
                 return False
+                    
+            # 리밸런싱 일자 파싱
+            rebalancing_date_str = str(rebalancing_date).strip()
             
-            # 구분자로 분리된 경우 (예: 3/15, 3-15, 3.15)
+            # 구분자로 분리된 경우 (년/월/일 또는 월/일)
             for sep in ['/', '-', '.']:
-                if sep in rebalancing_date:
-                    year, month, day = map(int, str(rebalancing_date).split(sep))
-                    target_day = str(day).zfill(2)
-                    if str(now.day).zfill(2) == target_day:
-                        # 리밸런싱 시간 확인 (09:00 ~ 09:10)
-                        return "0900" <= current_time <= "0910"
-                    return False
+                if sep in rebalancing_date_str:
+                    parts = rebalancing_date_str.split(sep)
+                    
+                    # 년/월/일 형식 (예: 2023/12/15)
+                    if len(parts) == 3:
+                        year, month, day = map(int, parts)
+                        if now.year == year and now.month == month and now.day == day:
+                            self.logger.info(f"리밸런싱 날짜 도달: {year}/{month}/{day}")
+                            return True
+                        return False
+                    
+                    # 월/일 형식 (예: 12/15)
+                    elif len(parts) == 2:
+                        month, day = map(int, parts)
+                        if now.month == month and now.day == day:
+                            self.logger.info(f"리밸런싱 날짜 도달: 매년 {month}/{day}")
+                            return True
+                        return False
             
-            # 숫자만 있는 경우 (예: "15")
-            if str(rebalancing_date).isdigit():
-                target_day = str(int(rebalancing_date)).zfill(2)
-                if str(now.day).zfill(2) == target_day:
-                    # 리밸런싱 시간 확인 (09:00 ~ 09:10)
-                    return "0900" <= current_time <= "0910"
+            # 숫자만 있는 경우 (일자만 지정, 예: "15")
+            if rebalancing_date_str.isdigit():
+                day = int(rebalancing_date_str)
+                if now.day == day:
+                    self.logger.info(f"리밸런싱 날짜 도달: 매월 {day}일")
+                    return True
             
             return False
             
@@ -259,12 +369,15 @@ class KRTrader(BaseTrader):
             
             # 총 평가금액 계산
             total_balance = float(balance['output2'][0]['tot_evlu_amt'])
+            self.logger.info(f"총 평가금액: {total_balance:,.0f}원")
             
             # 구글 시트에서 리밸런싱 비율 가져오기
             rebalancing_ratio = float(self.settings.get('rebalancing_ratio', 0))
             if not rebalancing_ratio:
                 self.logger.error("리밸런싱 비율이 설정되지 않았습니다.")
                 return
+            
+            # self.logger.info(f"리밸런싱 비율: {rebalancing_ratio * 100:.0f}%")
             
             # 보유 종목별 현재 비율 계산
             holdings = {}
@@ -283,21 +396,22 @@ class KRTrader(BaseTrader):
                     # 목표 비율 찾기
                     target_ratio = 0
                     stock_info = None
-                    for _, row in self.individual_stocks.iterrows():
-                        if row['종목코드'] == stock_code:
-                            target_ratio = float(row['배분비율'])
-                            stock_info = row
-                            break
-                    if not stock_info:
-                        for _, row in self.pool_stocks.iterrows():
-                            if row['종목코드'] == stock_code:
-                                target_ratio = float(row['배분비율'])
-                                stock_info = row
-                                break
+                    
+                    # 개별 종목에서 찾기
+                    individual_match = self.individual_stocks[self.individual_stocks['종목코드'] == stock_code]
+                    if not individual_match.empty:
+                        stock_info = individual_match.iloc[0]
+                        target_ratio = float(stock_info['배분비율'])
+                    else:
+                        # POOL 종목에서 찾기
+                        pool_match = self.pool_stocks[self.pool_stocks['종목코드'] == stock_code]
+                        if not pool_match.empty:
+                            stock_info = pool_match.iloc[0]
+                            target_ratio = float(stock_info['배분비율'])
                     
                     if target_ratio > 0:
-                        # 전체 리밸런싱 비율에 맞춰 목표 비율 조정
-                        # rebalancing_ratio가 1일 때 100%를 의미하도록 수정
+                        # 리밸런싱 비율 적용 (rebalancing_ratio가 1일 때 100%를 의미)
+                        # 배분비율과 리밸런싱 비율을 곱하여 최종 목표 비율 계산
                         adjusted_target_ratio = target_ratio * rebalancing_ratio
                         holdings[stock_code] = {
                             'name': holding['prdt_name'],
@@ -310,46 +424,80 @@ class KRTrader(BaseTrader):
             
             # 리밸런싱 실행
             for stock_code, info in holdings.items():
-                ratio_diff = info['current_ratio'] - info['target_ratio']
+                # 목표 비율과 현재 비율의 차이 계산 (미국 시장과 동일하게 목표 - 현재)
+                ratio_diff = info['target_ratio'] - info['current_ratio']
                 
-                # 비율 차이가 1% 이상일 때만 리밸런싱 실행
-                if abs(ratio_diff) >= 1.0:
+                # 최소 리밸런싱 비율 차이 (0.5% 이상)
+                if abs(ratio_diff) >= 0.5:
                     target_value = total_balance * (info['target_ratio'] / 100)
-                    value_diff = info['current_value'] - target_value
+                    value_diff = target_value - info['current_value']
                     quantity_diff = int(abs(value_diff) / info['current_price'])
                     
                     if quantity_diff > 0:
-                        order_type = "SELL" if ratio_diff > 0 else "BUY"
-                        result = self._retry_api_call(
-                            self.kr_api.order_stock,
-                            stock_code,
-                            order_type,
-                            quantity_diff,
-                            info['current_price']
-                        )
-                        
-                        if result:
-                            msg = f"리밸런싱 {order_type} 실행: {info['name']}({stock_code})"
-                            msg += f"\n- 현재 비중: {info['current_ratio']:.1f}% → 목표 비중: {info['target_ratio']:.1f}%"
-                            msg += f"\n- 거래: {quantity_diff}주 {'매도' if order_type == 'SELL' else '매수'}"
-                            msg += f"\n- 금액: {value_diff:,.0f}원 (단가: {info['current_price']:,}원)"
-                            self.logger.info(msg)
+                        if ratio_diff > 0:  # 매수 필요
+                            # 매수 시 지정가의 1% 높게 설정하여 시장가처럼 거래
+                            buy_price = info['current_price']
                             
-                            if order_type == "SELL":
+                            result = self._retry_api_call(
+                                self.kr_api.order_stock,
+                                stock_code,
+                                "BUY",
+                                quantity_diff
+                            )
+                            
+                            if result:
+                                msg = f"리밸런싱 매수: {info['name']}({stock_code}) {quantity_diff}주"
+                                msg += f"\n- 현재 비중: {info['current_ratio']:.1f}% → 목표 비중: {info['target_ratio']:.1f}%"
+                                msg += f"\n- 현재가: {info['current_price']:,}원"
+                                msg += f"\n- 매수 금액: {value_diff:,.0f}원"
+                                self.logger.info(msg)
+                                
+                                # 거래 내역 저장
+                                trade_data = {
+                                    "trade_type": "REBALANCE",
+                                    "stock_code": stock_code,
+                                    "stock_name": info['name'],
+                                    "quantity": quantity_diff,
+                                    "price": buy_price,
+                                    "total_amount": abs(value_diff),
+                                    "reason": f"리밸런싱 매수 (현재 비중 {info['current_ratio']:.1f}% → 목표 비중 {info['target_ratio']:.1f}%)",
+                                    "order_type": "BUY"
+                                }
+                                self.trade_history.add_trade(trade_data)
+                                
+                        else:  # 매도 필요
+                            # 매도 시 지정가의 1% 낮게 설정하여 시장가처럼 거래
+                            sell_price = info['current_price']
+                            
+                            result = self._retry_api_call(
+                                self.kr_api.order_stock,
+                                stock_code,
+                                "SELL",
+                                quantity_diff
+                            )
+                            
+                            if result:
+                                msg = f"리밸런싱 매도: {info['name']}({stock_code}) {quantity_diff}주"
+                                msg += f"\n- 현재 비중: {info['current_ratio']:.1f}% → 목표 비중: {info['target_ratio']:.1f}%"
+                                msg += f"\n- 현재가: {info['current_price']:,}원"
+                                msg += f"\n- 매도 금액: {abs(value_diff):,.0f}원"
+                                self.logger.info(msg)
+                                
+                                # 당일 매도 종목 캐시에 추가
                                 self.sold_stocks_cache.append(stock_code)
-                            
-                            # 거래 내역 저장
-                            trade_data = {
-                                "trade_type": "REBALANCE",
-                                "stock_code": stock_code,
-                                "stock_name": info['name'],
-                                "quantity": quantity_diff,
-                                "price": info['current_price'],
-                                "total_amount": abs(value_diff),
-                                "reason": f"리밸런싱 {order_type} (현재 비중 {info['current_ratio']:.1f}% → 목표 비중 {info['target_ratio']:.1f}%)",
-                                "order_type": order_type
-                            }
-                            self.trade_history.add_trade(trade_data)
+                                
+                                # 거래 내역 저장
+                                trade_data = {
+                                    "trade_type": "REBALANCE",
+                                    "stock_code": stock_code,
+                                    "stock_name": info['name'],
+                                    "quantity": quantity_diff,
+                                    "price": sell_price,
+                                    "total_amount": abs(value_diff),
+                                    "reason": f"리밸런싱 매도 (현재 비중 {info['current_ratio']:.1f}% → 목표 비중 {info['target_ratio']:.1f}%)",
+                                    "order_type": "SELL"
+                                }
+                                self.trade_history.add_trade(trade_data)
             
             self.logger.info("포트폴리오 리밸런싱이 완료되었습니다.")
             
@@ -380,26 +528,38 @@ class KRTrader(BaseTrader):
                 self.load_settings()
                 self.is_first_execution = False
             
-            # 매수 시간 확인
+            # 매수/매도 시간 확인 (구글 스프레드시트에서 가져온 설정 사용)
             buy_time = self.settings.get('buy_time', '1320')
-            # 매도 시간 확인
             sell_time = self.settings.get('sell_time', '0930')
             
-            # 매수 시간에 매수 실행 (아직 실행되지 않은 경우)
-            if current_time >= buy_time and not self.market_open_executed:
-                self.logger.info(f"매수 시간 도달: {buy_time}")
-                self._execute_buy_orders()
-                self.market_open_executed = True
-                
-            # 매도 시간에 매도 실행 (아직 실행되지 않은 경우)
-            if current_time >= sell_time and not self.market_close_executed:
-                self.logger.info(f"매도 시간 도달: {sell_time}")
+            # 1. 스탑로스/트레일링 스탑 체크 (매 루프마다 실행)
+            self._check_stop_conditions()
+            
+            # 2. 매도 시간에 매도 실행 (아직 실행되지 않은 경우, 지정 시간부터 10분간만 허용)
+            sell_end_time = f"{int(sell_time) + 10:04d}" if int(sell_time) % 100 < 50 else f"{int(sell_time) + 50:04d}"
+            if current_time >= sell_time and current_time <= sell_end_time and not self.market_close_executed:
+                self.logger.info(f"매도 시간 도달: {sell_time[:2]}:{sell_time[2:]}")
                 self._execute_sell_orders()
                 self.market_close_executed = True
                 
-            # 스탑로스/트레일링 스탑 체크 (장중 계속)
-            self._check_stop_conditions()
+                # 매도 후 리밸런싱 체크 및 실행 (미국 시장과 동일하게 매도 후 리밸런싱 실행)
+                if self._is_rebalancing_day():
+                    self.logger.info("리밸런싱 실행 날짜 조건 충족")
+                    
+                    # 계좌 잔고 조회
+                    balance = self._retry_api_call(self.kr_api.get_account_balance)
+                    if balance is not None:
+                        self._rebalance_portfolio(balance)
+                    else:
+                        self.logger.error("계좌 잔고 조회 실패로 리밸런싱을 실행할 수 없습니다.")
             
+            # 3. 매수 시간에 매수 실행 (아직 실행되지 않은 경우, 지정 시간부터 10분간만 허용)
+            buy_end_time = f"{int(buy_time) + 10:04d}" if int(buy_time) % 100 < 50 else f"{int(buy_time) + 50:04d}"
+            if current_time >= buy_time and current_time <= buy_end_time and not self.market_open_executed:
+                self.logger.info(f"매수 시간 도달: {buy_time[:2]}:{buy_time[2:]}")
+                self._execute_buy_orders()
+                self.market_open_executed = True
+                
         except Exception as e:
             error_msg = f"매매 실행 중 오류 발생: {str(e)}"
             self.logger.error(error_msg)
@@ -408,10 +568,6 @@ class KRTrader(BaseTrader):
     def _execute_buy_orders(self) -> None:
         """매수 주문을 실행합니다."""
         try:
-            # 매수 시점 확인
-            if not self._is_buy_time():
-                self.logger.info("현재는 매수 시점이 아닙니다.")
-                return
             
             # 계좌 잔고 조회
             balance = self._retry_api_call(self.kr_api.get_account_balance)
@@ -420,8 +576,8 @@ class KRTrader(BaseTrader):
                 return
                 
             # 현금 잔고 확인
-            cash = float(balance['output2'][0]['dnca_tot_amt'])
-            self.logger.info(f"현재 현금 잔고: {cash:,.0f}원")
+            cash = float(balance['output2'][0]['tot_evlu_amt'])
+            self.logger.info(f"현재 총 평가금액: {cash:,.0f}원")
             
             # 보유 종목 확인
             holdings = {}
@@ -431,24 +587,6 @@ class KRTrader(BaseTrader):
                     'name': holding['prdt_name'],
                     'current_price': float(holding['prpr'])
                 }
-            
-            # 당일 체결 내역 조회
-            executed_orders = self._retry_api_call(self.kr_api.get_today_executed_orders)
-            executed_buy_stocks = {}
-            
-            if executed_orders and 'output1' in executed_orders:
-                for order in executed_orders['output1']:
-                    # 매수 주문만 필터링
-                    if order['sll_buy_dvsn_cd'] == '02':  # 02: 매수
-                        stock_code = order['pdno']
-                        if stock_code not in executed_buy_stocks:
-                            executed_buy_stocks[stock_code] = {
-                                'name': order['prdt_name'],
-                                'quantity': 0,
-                                'amount': 0
-                            }
-                        executed_buy_stocks[stock_code]['quantity'] += int(order['ccld_qty'])
-                        executed_buy_stocks[stock_code]['amount'] += float(order['ccld_amt'])
             
             # 개별 종목 매수 조건 체크
             buy_candidates = []
@@ -515,20 +653,11 @@ class KRTrader(BaseTrader):
                 if is_buy:
                     self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
                     
-                    # 이미 매수한 수량 확인
-                    already_bought_qty = 0
-                    if stock_code in executed_buy_stocks:
-                        already_bought_qty = executed_buy_stocks[stock_code]['quantity']
-                        self.logger.info(f"{stock_name}({stock_code}) - 당일 이미 매수한 수량: {already_bought_qty}주")
-                    
                     # 매수 금액 계산 (현금 * 배분비율)
                     buy_amount = cash * allocation_ratio
                     
                     # 매수 수량 계산 (매수금액 / 현재가)
                     buy_quantity = int(buy_amount / current_price)
-                    
-                    # 이미 매수한 수량 차감
-                    buy_quantity -= already_bought_qty
                     
                     if buy_quantity > 0:
                         individual_candidates.append({
@@ -604,20 +733,12 @@ class KRTrader(BaseTrader):
                 if is_buy:
                     self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
                     
-                    # 이미 매수한 수량 확인
-                    already_bought_qty = 0
-                    if stock_code in executed_buy_stocks:
-                        already_bought_qty = executed_buy_stocks[stock_code]['quantity']
-                        self.logger.info(f"{stock_name}({stock_code}) - 당일 이미 매수한 수량: {already_bought_qty}주")
-                    
+
                     # 매수 금액 계산 (현금 * 배분비율)
                     buy_amount = cash * allocation_ratio
                     
                     # 매수 수량 계산 (매수금액 / 현재가)
                     buy_quantity = int(buy_amount / current_price)
-                    
-                    # 이미 매수한 수량 차감
-                    buy_quantity -= already_bought_qty
                     
                     if buy_quantity > 0:
                         pool_candidates.append({
@@ -745,8 +866,9 @@ class KRTrader(BaseTrader):
                         self.logger.info(f"현금 확보 성공: {secured_cash:,.0f}원 (필요 금액: {cash_to_secure:,.0f}원)")
                         self.logger.info(f"매도한 POOL 종목: {', '.join(sold_stocks)}")
                         
-                        # 매도 후 잠시 대기 (주문 체결 시간 고려)
-                        self._wait_for_api_call()
+                        # 매도 후 충분한 시간 대기 (주문 체결 시간 고려)
+                        self.logger.info("매도 주문 체결 대기 중... (5초)")
+                        time.sleep(5)  # 매도 주문 체결을 위해 5초 대기
                         
                         # 현금 업데이트
                         cash += secured_cash
@@ -782,7 +904,7 @@ class KRTrader(BaseTrader):
                     self.trade_history.add_trade(trade_data)
                     
                     # 매수 상세 정보 로깅
-                    msg = f"매수 주문 실행: {stock_name}({stock_code}) {quantity}주 (지정가: {price:,.0f}원)"
+                    msg = f"매수 주문 실행: {stock_name}({stock_code}) {quantity}주"
                     msg += f"\n- 매수 사유: 이동평균 상향돌파 (전일종가: {prev_close:,.0f}원 > {ma_period}일선: {ma_value:,.0f}원)"
                     msg += f"\n- 매수 금액: {quantity * price:,.0f}원"
                     msg += f"\n- 배분 비율: {candidate['allocation_ratio']*100:.1f}%"
@@ -922,7 +1044,7 @@ class KRTrader(BaseTrader):
                     self.trade_history.add_trade(trade_data)
                     
                     # 매도 상세 정보 로깅
-                    msg = f"매도 주문 실행: {stock_name}({stock_code}) {quantity}주 (지정가: {price:,.0f}원)"
+                    msg = f"매도 주문 실행: {stock_name}({stock_code}) {quantity}주"
                     msg += f"\n- 매도 사유: 이동평균 하향돌파 (전일종가: {prev_close:,.0f}원 < {ma_period}일선: {ma_value:,.0f}원)"
                     msg += f"\n- 매도 금액: {quantity * price:,.0f}원"
                     self.logger.info(msg)
@@ -1000,7 +1122,7 @@ class KRTrader(BaseTrader):
                     total_balance = float(new_balance['output2'][0]['tot_evlu_amt'])
                     d2_deposit = float(new_balance['output2'][0]['dnca_tot_amt'])
                     
-                    msg = f"스탑로스 매도 실행: {name} {quantity}주 (지정가)"
+                    msg = f"스탑로스 매도 실행: {name} {quantity}주"
                     msg += f"\n- 매도 사유: 손실률 {loss_pct:.2f}% (스탑로스 {self.settings['stop_loss']}% 도달)"
                     msg += f"\n- 매도 금액: {current_price * quantity:,.0f}원 (현재가 {current_price:,.0f}원)"
                     msg += f"\n- 매수 정보: 매수단가 {entry_price:,.0f}원 / 평가손익 {(current_price - entry_price) * quantity:,.0f}원"
@@ -1082,7 +1204,7 @@ class KRTrader(BaseTrader):
                             total_balance = float(new_balance['output2'][0]['tot_evlu_amt'])
                             d2_deposit = float(new_balance['output2'][0]['dnca_tot_amt'])
                             
-                            msg = f"트레일링 스탑 매도 실행: {name} {quantity}주 (지정가)"
+                            msg = f"트레일링 스탑 매도 실행: {name} {quantity}주"
                             msg += f"\n- 매도 사유: 고점 대비 하락률 {drop_pct:.2f}% (트레일링 스탑 {self.settings['trailing_stop']}% 도달)"
                             msg += f"\n- 매도 금액: {current_price * quantity:,.0f}원 (현재가 {current_price:,.0f}원)"
                             msg += f"\n- 매수 정보: 매수단가 {entry_price:,.0f}원 / 평가손익 {(current_price - entry_price) * quantity:,.0f}원"
@@ -1166,16 +1288,16 @@ class KRTrader(BaseTrader):
             output2 = balance.get('output2', {})
             
             # 매입금액합계금액 - 보유 종목의 매입금액 합계
-            total_purchase_amount = float(output2.get('pchs_amt_smtl_amt', 0))
+            total_purchase_amount = float(output2[0].get('pchs_amt_smtl_amt', 0))
             
             # 평가금액합계금액 - 보유 종목의 평가금액 합계
-            total_eval_amount = float(output2.get('evlu_amt_smtl_amt', 0))
+            total_eval_amount = float(output2[0].get('evlu_amt_smtl_amt', 0))
             
             # 총평가손익금액 - 보유 종목의 평가손익 합계
-            total_eval_profit_loss = float(output2.get('evlu_pfls_smtl_amt', 0))
+            total_eval_profit_loss = float(output2[0].get('evlu_pfls_smtl_amt', 0))
             
             # 총자산금액 - 예수금 + 평가금액
-            total_asset_amount = float(output2.get('tot_evlu_amt', 0))
+            total_asset_amount = float(output2[0].get('tot_evlu_amt', 0))
             
             # 총수익률 계산
             total_profit_rate = 0
