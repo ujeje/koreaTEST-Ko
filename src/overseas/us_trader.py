@@ -32,6 +32,10 @@ class USTrader(BaseTrader):
         self.highest_price_cache = {}  # 종목별 최고가 캐시
         self.highest_price_cache_date = None  # 최고가 캐시 갱신 날짜
         
+        # 초기화 시 써머타임 확인 및 장 시간 조정
+        self._adjust_market_hours()
+        self.logger.info(f"미국 시장 시간 설정: {self.config['trading']['usa_market_start']} ~ {self.config['trading']['usa_market_end']}")
+    
     def _wait_for_api_call(self):
         """API 호출 간격을 제어합니다."""
         current_time = time.time()
@@ -92,6 +96,9 @@ class USTrader(BaseTrader):
                 self.logger.info(f"오늘({current_date})은 미국 증시 휴장일입니다.")
                 return False
                 
+            # 써머타임 여부 확인 및 장 시간 조정
+            self._adjust_market_hours()
+            
             # 장 시작 시간과 종료 시간 체크
             current_time_str = current_time.strftime('%H%M')
             if not (self.config['trading']['usa_market_start'] <= current_time_str <= self.config['trading']['usa_market_end']):
@@ -109,6 +116,9 @@ class USTrader(BaseTrader):
                 self.logger.info("주말은 거래가 불가능합니다.")
                 return False
                 
+            # 써머타임 여부 확인 및 장 시간 조정
+            self._adjust_market_hours()
+            
             # 장 시작 시간과 종료 시간 체크
             current_time_str = current_time.strftime('%H%M')
             if not (self.config['trading']['usa_market_start'] <= current_time_str <= self.config['trading']['usa_market_end']):
@@ -117,8 +127,39 @@ class USTrader(BaseTrader):
                 
             return True
         
+    def _adjust_market_hours(self):
+        """써머타임 여부에 따라 장 시간을 조정합니다."""
+        try:
+            # 현재 시간 (미국 시간대 기준)
+            now = datetime.now(self.us_timezone)
+            
+            # 써머타임 여부 확인 (tzinfo.dst()가 0이 아니면 써머타임)
+            is_dst = now.dst().total_seconds() != 0
+            
+            # 한국 시간 기준 장 시간 설정
+            if is_dst:
+                # 써머타임 적용 시 (한국시간 기준 22:30 ~ 05:00)
+                market_start = "2230"
+                market_end = "0500"
+                self.logger.debug("미국 써머타임 적용 중: 한국시간 22:30 ~ 05:00")
+            else:
+                # 써머타임 미적용 시 (한국시간 23:30 ~ 06:00)
+                market_start = "2330"
+                market_end = "0600"
+                self.logger.debug("미국 써머타임 미적용: 한국시간 23:30 ~ 06:00")
+            
+            # 설정 업데이트
+            self.config['trading']['usa_market_start'] = market_start
+            self.config['trading']['usa_market_end'] = market_end
+            
+        except Exception as e:
+            self.logger.error(f"장 시간 조정 중 오류 발생: {str(e)}")
+    
     def _is_market_open_time(self) -> bool:
         """시가 매수 시점인지 확인합니다."""
+        # 매번 시장 시간 조정
+        self._adjust_market_hours()
+        
         current_time = datetime.now(self.us_timezone).strftime('%H%M')
         start_time = self.config['trading']['usa_market_start']
         
@@ -127,6 +168,9 @@ class USTrader(BaseTrader):
         
     def _is_market_close_time(self) -> bool:
         """종가 매수 시점인지 확인합니다."""
+        # 매번 시장 시간 조정
+        self._adjust_market_hours()
+        
         current_time = datetime.now(self.us_timezone).strftime('%H%M')
         end_time = self.config['trading']['usa_market_end']
 
@@ -601,9 +645,6 @@ class USTrader(BaseTrader):
             is_market_open = self._is_market_open_time() and not self.market_open_executed
             # 종가 매수 조건
             is_market_close = self._is_market_close_time() and not self.market_close_executed
-            
-            is_market_open = True
-            # is_market_close = False
             
             # 1. 장 시작 시점에 매도 조건 체크 및 실행
             if is_market_open:
