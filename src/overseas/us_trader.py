@@ -345,10 +345,45 @@ class USTrader(BaseTrader):
         
     def check_buy_condition(self, stock_code: str, ma_period: int, prev_close: float) -> tuple[bool, Optional[float]]:
         """매수 조건을 확인합니다."""
-        ma = self.calculate_ma(stock_code, ma_period)
-        if ma is None:
+        try:
+            # 5일과 지정된 기간의 이동평균선 계산
+            ma5 = self.calculate_ma(stock_code, 5)
+            ma_target = self.calculate_ma(stock_code, ma_period)
+            
+            if ma5 is None or ma_target is None:
+                return False, None
+                
+            # 전일 데이터 조회
+            end_date = datetime.now(self.us_timezone).strftime("%Y%m%d")
+            start_date = (datetime.now(self.us_timezone) - timedelta(days=2)).strftime("%Y%m%d")
+            
+            df = self.us_api.get_daily_price(stock_code, start_date, end_date)
+            if df is None or len(df) < 2:
+                return False, None
+                
+            # 전일과 전전일의 5일 이동평균선
+            ma5_prev = df['clos'].rolling(window=5).mean().iloc[-2]  # 전일
+            ma5_prev2 = df['clos'].rolling(window=5).mean().iloc[-3]  # 전전일
+            
+            # 전일과 전전일의 지정된 이동평균선
+            ma_target_prev = df['clos'].rolling(window=ma_period).mean().iloc[-2]  # 전일
+            ma_target_prev2 = df['clos'].rolling(window=ma_period).mean().iloc[-3]  # 전전일
+            
+            # 골든크로스 조건 확인
+            # 전전일: 5일선 < 지정된 이평선
+            # 전일: 5일선 > 지정된 이평선
+            golden_cross = (ma5_prev2 < ma_target_prev2) and (ma5_prev > ma_target_prev)
+            
+            if golden_cross:
+                self.logger.info(f"골든크로스 발생: {stock_code}")
+                self.logger.info(f"- 전전일: 5일선(${ma5_prev2:.2f}) < {ma_period}일선(${ma_target_prev2:.2f})")
+                self.logger.info(f"- 전일: 5일선(${ma5_prev:.2f}) > {ma_period}일선(${ma_target_prev:.2f})")
+            
+            return golden_cross, ma_target
+            
+        except Exception as e:
+            self.logger.error(f"매수 조건 확인 중 오류 발생 ({stock_code}): {str(e)}")
             return False, None
-        return bool(prev_close > ma), ma
         
     def check_sell_condition(self, stock_code: str, ma_period: int, prev_close: float) -> tuple[bool, Optional[float]]:
         """매도 조건을 확인합니다."""
@@ -856,7 +891,7 @@ class USTrader(BaseTrader):
                         self.logger.info(msg)
                         return
                     
-                    trade_msg = f"매수 조건 성립 - {row['종목명']}({stock_code}): 전일 종가 ${prev_close:.2f} > {ma_period}일 이동평균 [${ma:.2f}]"
+                    trade_msg = f"매수 조건 성립 - {row['종목명']}({stock_code}): 5일선이 {ma_period}일선을 상향돌파"
                     self.logger.info(trade_msg)
                     
                     # 최대 보유 종목 수 체크 (개별 종목과 POOL 종목 각각 체크)
@@ -1008,10 +1043,10 @@ class USTrader(BaseTrader):
                         result = self._retry_api_call(self.us_api.order_stock, stock_code, "BUY", market_quantity, buy_price)
                         if result:
                             msg = f"매수 주문 실행: {row['종목명']}({stock_code}) {market_quantity}주 (지정가: ${current_price:,.2f})"
-                            msg += f"\n- 매수 사유: 이동평균 상향돌파"
+                            msg += f"\n- 매수 사유: 5일선이 {ma_period}일선을 상향돌파"
                             msg += f"\n- 매수 정보: 주문가 ${current_price:,.2f} / 총금액 ${current_price * market_quantity:,.2f}"
                             msg += f"\n- 배분비율: {allocation_ratio*100}% (총자산 ${total_assets:,.2f} 중 ${buy_amount:,.2f})"
-                            msg += f"\n- 이동평균: {ma_period}일선 ${ma:.2f} < 전일종가 ${prev_close:.2f}"
+                            msg += f"\n- 이동평균: {ma_period}일선 ${ma:.2f}"
                             msg += f"\n- 계좌 상태: 총평가금액 ${total_assets:,.2f}"
                             msg += f"\n- 종가 매수 예정: {total_quantity - market_quantity}주 (전체 목표 수량의 {self.settings['market_close_ratio']*100:.0f}%)"
                             self.logger.info(msg)
@@ -1026,7 +1061,7 @@ class USTrader(BaseTrader):
                                 "total_amount": current_price * market_quantity,
                                 "ma_period": ma_period,
                                 "ma_value": ma,
-                                "reason": f"이동평균 상향돌파 (전일 종가 ${prev_close:.2f} > MA${ma_period} ${ma:.2f})",
+                                "reason": f"5일선이 {ma_period}일선을 상향돌파",
                                 "allocation_ratio": allocation_ratio
                             }
                             self.trade_history.add_trade(trade_data)
@@ -1055,7 +1090,7 @@ class USTrader(BaseTrader):
                 should_buy, ma = self.check_buy_condition(stock_code, ma_period, prev_close)
                 if not should_buy:
                     # 이평선 조건을 충족하지 않으면 종가 매수 불필요
-                    self.logger.info(f"종가 매수 불필요: {row['종목명']}({stock_code}) - 이평선 조건 미충족")
+                    self.logger.info(f"종가 매수 불필요: {row['종목명']}({stock_code}) - 골든크로스 조건 미충족")
                     return
                 
                 # 당일 매수 수량 합계 계산
@@ -1211,7 +1246,7 @@ class USTrader(BaseTrader):
                 result = self._retry_api_call(self.us_api.order_stock, stock_code, "BUY", additional_quantity, buy_price)
                 if result:
                     msg = f"종가 매수 주문 실행: {row['종목명']}({stock_code}) {additional_quantity}주 (지정가: ${current_price:.2f})"
-                    msg += f"\n- 매수 사유: 이동평균 상향돌파 종가 매수 (전체 목표의 {self.settings['market_close_ratio']*100:.0f}%)"
+                    msg += f"\n- 매수 사유: 5일선이 {ma_period}일선을 상향돌파 종가 매수 (전체 목표의 {self.settings['market_close_ratio']*100:.0f}%)"
                     msg += f"\n- 기존 매수: {total_bought}주 / 추가 매수: {additional_quantity}주 / 총 목표: {total_target_quantity}주"
                     msg += f"\n- 매수 정보: 매수단가 ${current_price:,.2f} / 총금액 ${current_price * additional_quantity:,.2f}"
                     self.logger.info(msg)
@@ -1226,7 +1261,7 @@ class USTrader(BaseTrader):
                         "total_amount": current_price * additional_quantity,
                         "ma_period": ma_period,
                         "ma_value": ma,
-                        "reason": f"이동평균 상향돌파 종가 매수 (전일 종가 ${prev_close:.2f} > MA${ma_period} ${ma:.2f})",
+                        "reason": f"5일선이 {ma_period}일선을 상향돌파 종가 매수",
                         "allocation_ratio": allocation_ratio
                     }
                     self.trade_history.add_trade(trade_data)

@@ -296,10 +296,45 @@ class KRTrader(BaseTrader):
     
     def check_buy_condition(self, stock_code: str, ma_period: int, prev_close: float) -> tuple[bool, Optional[float]]:
         """매수 조건을 확인합니다."""
-        ma = self.calculate_ma(stock_code, ma_period)
-        if ma is None:
+        try:
+            # 5일과 지정된 기간의 이동평균선 계산
+            ma5 = self.calculate_ma(stock_code, 5)
+            ma_target = self.calculate_ma(stock_code, ma_period)
+            
+            if ma5 is None or ma_target is None:
+                return False, None
+                
+            # 전일 데이터 조회
+            end_date = datetime.now(self.kr_timezone).strftime("%Y%m%d")
+            start_date = (datetime.now(self.kr_timezone) - timedelta(days=2)).strftime("%Y%m%d")
+            
+            df = self.kr_api.get_daily_price(stock_code, start_date, end_date)
+            if df is None or len(df) < 2:
+                return False, None
+                
+            # 전일과 전전일의 5일 이동평균선
+            ma5_prev = df['clos'].rolling(window=5).mean().iloc[-2]  # 전일
+            ma5_prev2 = df['clos'].rolling(window=5).mean().iloc[-3]  # 전전일
+            
+            # 전일과 전전일의 지정된 이동평균선
+            ma_target_prev = df['clos'].rolling(window=ma_period).mean().iloc[-2]  # 전일
+            ma_target_prev2 = df['clos'].rolling(window=ma_period).mean().iloc[-3]  # 전전일
+            
+            # 골든크로스 조건 확인
+            # 전전일: 5일선 < 지정된 이평선
+            # 전일: 5일선 > 지정된 이평선
+            golden_cross = (ma5_prev2 < ma_target_prev2) and (ma5_prev > ma_target_prev)
+            
+            if golden_cross:
+                self.logger.info(f"골든크로스 발생: {stock_code}")
+                self.logger.info(f"- 전전일: 5일선(₩{ma5_prev2:.2f}) < {ma_period}일선(₩{ma_target_prev2:.2f})")
+                self.logger.info(f"- 전일: 5일선(₩{ma5_prev:.2f}) > {ma_period}일선(₩{ma_target_prev:.2f})")
+            
+            return golden_cross, ma_target
+            
+        except Exception as e:
+            self.logger.error(f"매수 조건 확인 중 오류 발생 ({stock_code}): {str(e)}")
             return False, None
-        return bool(prev_close > ma), ma
     
     def check_sell_condition(self, stock_code: str, ma_period: int, prev_close: float) -> tuple[bool, Optional[float]]:
         """매도 조건을 확인합니다."""
@@ -651,7 +686,7 @@ class KRTrader(BaseTrader):
                 is_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close)
                 
                 if is_buy:
-                    self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
+                    self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 충족: 5일선이 {ma_period}일선을 상향돌파")
                     
                     # 매수 금액 계산 (현금 * 배분비율)
                     buy_amount = cash * allocation_ratio
@@ -676,7 +711,7 @@ class KRTrader(BaseTrader):
                         self.logger.info(f"{stock_name}({stock_code}) - 추가 매수 수량이 0 또는 음수")
                 else:
                     if ma_value:
-                        self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 미충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
+                        self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 미충족: 골든크로스 미발생")
                     else:
                         self.logger.info(f"{stock_name}({stock_code}) - 이동평균 계산 실패")
             
@@ -731,9 +766,8 @@ class KRTrader(BaseTrader):
                 is_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close)
                 
                 if is_buy:
-                    self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
+                    self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 충족: 5일선이 {ma_period}일선을 상향돌파")
                     
-
                     # 매수 금액 계산 (현금 * 배분비율)
                     buy_amount = cash * allocation_ratio
                     
@@ -757,7 +791,7 @@ class KRTrader(BaseTrader):
                         self.logger.info(f"{stock_name}({stock_code}) - 추가 매수 수량이 0 또는 음수")
                 else:
                     if ma_value:
-                        self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 미충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
+                        self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 미충족: 골든크로스 미발생")
                     else:
                         self.logger.info(f"{stock_name}({stock_code}) - 이동평균 계산 실패")
             
