@@ -31,6 +31,7 @@ config/token.json
 # Data
 data/
 *.json
+*.db
 
 # IDE
 .idea/

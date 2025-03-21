@@ -490,6 +490,7 @@ class KRTrader(BaseTrader):
                                 # 거래 내역 저장
                                 trade_data = {
                                     "trade_type": "REBALANCE",
+                                    "trade_action": "BUY",
                                     "stock_code": stock_code,
                                     "stock_name": info['name'],
                                     "quantity": quantity_diff,
@@ -524,6 +525,7 @@ class KRTrader(BaseTrader):
                                 # 거래 내역 저장
                                 trade_data = {
                                     "trade_type": "REBALANCE",
+                                    "trade_action": "SELL",
                                     "stock_code": stock_code,
                                     "stock_name": info['name'],
                                     "quantity": quantity_diff,
@@ -926,6 +928,7 @@ class KRTrader(BaseTrader):
                     # 거래 내역 저장
                     trade_data = {
                         "trade_type": "BUY",
+                        "trade_action": "BUY",
                         "stock_code": stock_code,
                         "stock_name": stock_name,
                         "quantity": quantity,
@@ -1064,6 +1067,7 @@ class KRTrader(BaseTrader):
                     # 거래 내역 저장
                     trade_data = {
                         "trade_type": "SELL",
+                        "trade_action": "SELL",
                         "stock_code": stock_code,
                         "stock_name": stock_name,
                         "quantity": quantity,
@@ -1140,6 +1144,7 @@ class KRTrader(BaseTrader):
                     # 거래 내역 저장
                     trade_data = {
                         "trade_type": "STOP_LOSS",
+                        "trade_action": "SELL",
                         "stock_code": stock_code,
                         "stock_name": name,
                         "quantity": quantity,
@@ -1222,6 +1227,7 @@ class KRTrader(BaseTrader):
                             # 거래 내역 저장
                             trade_data = {
                                 "trade_type": "TRAILING_STOP",
+                                "trade_action": "SELL",
                                 "stock_code": stock_code,
                                 "stock_name": name,
                                 "quantity": quantity,

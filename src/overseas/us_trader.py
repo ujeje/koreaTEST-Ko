@@ -32,8 +32,6 @@ class USTrader(BaseTrader):
         self.highest_price_cache = {}  # 종목별 최고가 캐시
         self.highest_price_cache_date = None  # 최고가 캐시 갱신 날짜
         
-        # 초기화 시 써머타임 확인 및 장 시간 조정
-        self._adjust_market_hours()
         self.logger.info(f"미국 시장 시간 설정: {self.config['trading']['usa_market_start']} ~ {self.config['trading']['usa_market_end']}")
     
     def _wait_for_api_call(self):
@@ -95,9 +93,6 @@ class USTrader(BaseTrader):
             if not nyse_calendar.is_session(current_date):
                 self.logger.info(f"오늘({current_date})은 미국 증시 휴장일입니다.")
                 return False
-                
-            # 써머타임 여부 확인 및 장 시간 조정
-            self._adjust_market_hours()
             
             # 장 시작 시간과 종료 시간 체크
             current_time_str = current_time.strftime('%H%M')
@@ -116,9 +111,6 @@ class USTrader(BaseTrader):
                 self.logger.info("주말은 거래가 불가능합니다.")
                 return False
                 
-            # 써머타임 여부 확인 및 장 시간 조정
-            self._adjust_market_hours()
-            
             # 장 시작 시간과 종료 시간 체크
             current_time_str = current_time.strftime('%H%M')
             if not (self.config['trading']['usa_market_start'] <= current_time_str <= self.config['trading']['usa_market_end']):
@@ -126,40 +118,10 @@ class USTrader(BaseTrader):
                 return False
                 
             return True
-        
-    def _adjust_market_hours(self):
-        """써머타임 여부에 따라 장 시간을 조정합니다."""
-        try:
-            # 현재 시간 (미국 시간대 기준)
-            now = datetime.now(self.us_timezone)
-            
-            # 써머타임 여부 확인 (tzinfo.dst()가 0이 아니면 써머타임)
-            is_dst = now.dst().total_seconds() != 0
-            
-            # 한국 시간 기준 장 시간 설정
-            if is_dst:
-                # 써머타임 적용 시 (한국시간 기준 22:30 ~ 05:00)
-                market_start = "2230"
-                market_end = "0500"
-                self.logger.debug("미국 써머타임 적용 중: 한국시간 22:30 ~ 05:00")
-            else:
-                # 써머타임 미적용 시 (한국시간 23:30 ~ 06:00)
-                market_start = "2330"
-                market_end = "0600"
-                self.logger.debug("미국 써머타임 미적용: 한국시간 23:30 ~ 06:00")
-            
-            # 설정 업데이트
-            self.config['trading']['usa_market_start'] = market_start
-            self.config['trading']['usa_market_end'] = market_end
-            
-        except Exception as e:
-            self.logger.error(f"장 시간 조정 중 오류 발생: {str(e)}")
     
     def _is_market_open_time(self) -> bool:
         """시가 매수 시점인지 확인합니다."""
-        # 매번 시장 시간 조정
-        self._adjust_market_hours()
-        
+        # 미국 현지 시간으로 확인
         current_time = datetime.now(self.us_timezone).strftime('%H%M')
         start_time = self.config['trading']['usa_market_start']
         
@@ -168,9 +130,7 @@ class USTrader(BaseTrader):
         
     def _is_market_close_time(self) -> bool:
         """종가 매수 시점인지 확인합니다."""
-        # 매번 시장 시간 조정
-        self._adjust_market_hours()
-        
+        # 미국 현지 시간으로 확인
         current_time = datetime.now(self.us_timezone).strftime('%H%M')
         end_time = self.config['trading']['usa_market_end']
 
@@ -459,11 +419,6 @@ class USTrader(BaseTrader):
             
             # 현재 날짜/시간 확인 (미국 시간 기준)
             now = datetime.now(self.us_timezone)
-            #current_time = now.strftime("%H%M")
-            
-            # 리밸런싱 시간이 아니면 False 반환 (09:00 ~ 09:10)
-            # if not ("0900" <= current_time <= "0910"):
-            #     return False
             
             # 리밸런싱 일자 파싱
             rebalancing_date_str = str(rebalancing_date).strip()
@@ -597,6 +552,7 @@ class USTrader(BaseTrader):
                             # 거래 내역 저장
                             trade_data = {
                                 "trade_type": "REBALANCE_BUY",
+                                "trade_action": "BUY",
                                 "stock_code": stock_code,
                                 "stock_name": info['name'],
                                 "quantity": quantity_diff,
@@ -628,6 +584,7 @@ class USTrader(BaseTrader):
                             # 거래 내역 저장
                             trade_data = {
                                 "trade_type": "REBALANCE_SELL",
+                                "trade_action": "SELL",
                                 "stock_code": stock_code,
                                 "stock_name": info['name'],
                                 "quantity": abs(quantity_diff),
@@ -804,6 +761,7 @@ class USTrader(BaseTrader):
                         # 거래 내역 저장
                         trade_data = {
                             "trade_type": "SELL",
+                            "trade_action": "SELL",
                             "stock_code": stock_code,
                             "stock_name": stock_name,
                             "quantity": quantity,
@@ -1000,6 +958,7 @@ class USTrader(BaseTrader):
                                 # 거래 내역 저장
                                 trade_data = {
                                     "trade_type": "SELL",
+                                    "trade_action": "SELL",
                                     "stock_code": pool_stock['code'],
                                     "stock_name": pool_stock['name'],
                                     "quantity": sell_quantity,
@@ -1054,6 +1013,7 @@ class USTrader(BaseTrader):
                             # 거래 내역 저장
                             trade_data = {
                                 "trade_type": "BUY",
+                                "trade_action": "BUY",
                                 "stock_code": stock_code,
                                 "stock_name": row['종목명'],
                                 "quantity": market_quantity,
@@ -1190,6 +1150,7 @@ class USTrader(BaseTrader):
                             # 거래 내역 저장
                             trade_data = {
                                 "trade_type": "SELL",
+                                "trade_action": "SELL",
                                 "stock_code": pool_stock['code'],
                                 "stock_name": pool_stock['name'],
                                 "quantity": sell_quantity,
@@ -1254,6 +1215,7 @@ class USTrader(BaseTrader):
                     # 거래 내역 저장
                     trade_data = {
                         "trade_type": "BUY",
+                        "trade_action": "BUY",
                         "stock_code": stock_code,
                         "stock_name": row['종목명'],
                         "quantity": additional_quantity,
@@ -1339,6 +1301,7 @@ class USTrader(BaseTrader):
                     # 거래 내역 저장
                     trade_data = {
                         "trade_type": "STOP_LOSS",
+                        "trade_action": "SELL",
                         "stock_code": stock_code,
                         "stock_name": name,
                         "quantity": quantity,
@@ -1416,6 +1379,7 @@ class USTrader(BaseTrader):
                             # 거래 내역 저장
                             trade_data = {
                                 "trade_type": "TRAILING_STOP",
+                                "trade_action": "SELL",
                                 "stock_code": stock_code,
                                 "stock_name": name,
                                 "quantity": quantity,

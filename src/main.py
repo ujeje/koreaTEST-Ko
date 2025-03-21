@@ -31,7 +31,7 @@ def is_us_market_time() -> bool:
     if now.weekday() >= 5:  # 5: 토요일, 6: 일요일
         return False
         
-    # 장 운영 시간 체크 (09:30 ~ 16:00)
+    # 장 운영 시간 체크 (미국 현지 시간 기준 09:30 ~ 16:00)
     return "0930" <= current_time <= "1600"
 
 def print_trading_settings(logger, market: str, trader) -> None:
