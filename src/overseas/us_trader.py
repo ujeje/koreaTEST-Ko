@@ -23,7 +23,7 @@ class USTrader(BaseTrader):
         self.us_api = KISUSAPIManager(config_path)
         self.trade_history = TradeHistoryManager("USA")
         self.load_settings()
-        self.us_timezone = pytz.timezone(self.config['trading']['usa_timezone'])
+        self.us_timezone = pytz.timezone("America/New_York")
         self.last_api_call = 0
         self.api_call_interval = 1.0  # API 호출 간격 (초)
         self.max_retries = 3  # 최대 재시도 횟수

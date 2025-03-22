@@ -8,6 +8,7 @@ from src.common.base_trader import BaseTrader
 from src.korean.kis_kr_api import KISKRAPIManager
 from src.utils.trade_history_manager import TradeHistoryManager
 import time
+import pytz  # 시간대 처리를 위한 pytz 추가
 
 class KRTrader(BaseTrader):
     """한국 주식 트레이더"""
@@ -24,6 +25,9 @@ class KRTrader(BaseTrader):
         self.last_api_call = 0
         self.api_call_interval = 0.2  # API 호출 간격 (초)
         self.max_retries = 3  # 최대 재시도 횟수
+        
+        # 한국 시간대 설정
+        self.kr_timezone = pytz.timezone("Asia/Seoul")
         
         # 최고가 캐시 관련 변수 추가
         self.highest_price_cache = {}  # 종목별 최고가 캐시
