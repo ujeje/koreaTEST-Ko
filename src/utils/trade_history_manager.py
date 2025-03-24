@@ -129,6 +129,13 @@ class TradeHistoryManager:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
+            # 미국장의 경우 거래소 코드 제거 (코드.거래소 형식에서 코드만 추출)
+            stock_code = trade_data["stock_code"]
+            if self.market_type.upper() == "USA" and "." in stock_code:
+                stock_code = stock_code.split(".")[0]
+            else:
+                stock_code = trade_data["stock_code"]
+            
             # 거래 내역 추가
             cursor.execute('''
             INSERT INTO trades (
@@ -139,7 +146,7 @@ class TradeHistoryManager:
             ''', (
                 trade_data["trade_type"],
                 trade_data["trade_action"],
-                trade_data["stock_code"],
+                stock_code,
                 trade_data["stock_name"],
                 trade_data["quantity"],
                 trade_data["price"],
@@ -152,7 +159,6 @@ class TradeHistoryManager:
                 trade_data["timestamp"],
                 trade_data["timezone"]
             ))
-            
             # 종목별 거래 내역 업데이트
             self._update_stock_history(cursor, trade_data)
             

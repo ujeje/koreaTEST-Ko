@@ -615,7 +615,6 @@ class USTrader(BaseTrader):
                 self.execution_date = current_date
                 self.market_open_executed = False
                 self.market_close_executed = False
-                self.is_first_execution = True
                 self.sold_stocks_cache = []  # 당일 매도 종목 캐시 초기화
                 self.sold_stocks_cache_time = 0  # 캐시 시간 초기화
                 self.logger.info(f"=== {self.execution_date} 매매 시작 ===")

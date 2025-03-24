@@ -559,15 +559,9 @@ class KRTrader(BaseTrader):
                 self.execution_date = now.strftime("%Y-%m-%d")
                 self.market_open_executed = False
                 self.market_close_executed = False
-                self.is_first_execution = True
                 self.sold_stocks_cache = []  # 당일 매도 종목 캐시 초기화
                 self.sold_stocks_cache_time = 0  # 캐시 시간 초기화
                 self.logger.info(f"=== {self.execution_date} 매매 시작 ===")
-            
-            # 설정 로드 (최초 실행 시에만)
-            if self.is_first_execution:
-                self.load_settings()
-                self.is_first_execution = False
             
             # 매수/매도 시간 확인 (구글 스프레드시트에서 가져온 설정 사용)
             buy_time = self.settings.get('buy_time', '1320')
