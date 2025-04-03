@@ -22,7 +22,7 @@ discord:
 
 # 구글 스프레드시트 설정
 google_sheet:
-  spreadsheet_id: "1HMg-EpaE1E19m3gZPpid0JZoJr_LAy2aEscyzB8MA9Q"  # 구글 스프레드시트 ID
+  spreadsheet_id: "1PlL0HYykIDb-iSjn-Z2WfbmnWXN0_SuSUPwv2QdJmW4"  # 구글 스프레드시트 ID
   credentials_path: 'config/google_credentials.json'                # 구글 API 인증 파일 경로
   sheets:
     settings_kr: "투자설정[KOR]"    # 국내 투자 설정 시트

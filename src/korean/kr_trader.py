@@ -113,7 +113,7 @@ class KRTrader(BaseTrader):
             if normalized_buy_time and len(normalized_buy_time) == 4:
                 self.settings['buy_time'] = normalized_buy_time
             else:
-                self.settings['buy_time'] = '1320'  # 기본값 13:20
+                self.settings['buy_time'] = '1435'  # 기본값 13:20
                 self.logger.warning(f"유효하지 않은 매수 시간 형식: {buy_time}, 기본값 13:20으로 설정")
                 
             if normalized_sell_time and len(normalized_sell_time) == 4:
@@ -136,8 +136,12 @@ class KRTrader(BaseTrader):
         # 장 운영 시간 체크 (09:00 ~ 15:30)
         return self.config['trading']['kor_market_start'] <= current_time <= self.config['trading']['kor_market_end']
     
-    def calculate_ma(self, stock_code: str, period: int = 20) -> Optional[float]:
-        """이동평균을 계산합니다."""
+    def calculate_ma(self, stock_code: str, period: int = 20) -> Optional[tuple]:
+        """이동평균을 계산합니다.
+        
+        Returns:
+            Optional[tuple]: (전전일 이동평균값, 전일 이동평균값) 또는 None
+        """
         try:
             end_date = datetime.now().strftime("%Y%m%d")
             # 이동평균 계산을 위해 필요한 데이터 기간 (기본 2배로 설정)
@@ -152,11 +156,15 @@ class KRTrader(BaseTrader):
             # 필요한 기간이 100일 이하인 경우 한 번에 조회
             if required_days <= 100:
                 df = self.kr_api.get_daily_price(stock_code, start_date, end_date)
-                if df is None or len(df) < period:
+                if df is None or len(df) < period + 1:  # 최소한 period+1개의 데이터가 필요
                     return None
                     
-                ma = df['stck_clpr'].rolling(window=period).mean().iloc[-2]  # 전일 종가의 이동평균값
-                return ma
+                # 이동평균 계산
+                ma_series = df['stck_clpr'].astype(float).rolling(window=period).mean()
+                # 전전일, 전일 이동평균값 반환
+                ma_prev2 = ma_series.iloc[-3]  # 전전일
+                ma_prev = ma_series.iloc[-2]    # 전일
+                return (ma_prev2, ma_prev)
             
             # 필요한 기간이 100일 초과인 경우 분할 조회
             while current_end_date >= start_datetime:
@@ -198,13 +206,17 @@ class KRTrader(BaseTrader):
                 combined_df = combined_df.sort_values('stck_bsop_date', ascending=True).reset_index(drop=True)
             
             # 데이터가 충분한지 확인
-            if len(combined_df) < period:
-                self.logger.warning(f"{stock_code}: 이동평균 계산을 위한 데이터가 부족합니다. (필요: {period}일, 실제: {len(combined_df)}일)")
+            if len(combined_df) < period + 1:  # 최소한 period+1개의 데이터가 필요
+                self.logger.warning(f"{stock_code}: 이동평균 계산을 위한 데이터가 부족합니다. (필요: {period+1}일, 실제: {len(combined_df)}일)")
                 return None
             
             # 이동평균 계산
-            ma = combined_df['stck_clpr'].astype(float).rolling(window=period).mean().iloc[-2]  # 전일 종가의 이동평균값
-            return ma
+            ma_series = combined_df['stck_clpr'].astype(float).rolling(window=period).mean()
+            # 전전일, 전일 이동평균값 반환
+            ma_prev2 = ma_series.iloc[-3]  # 전전일
+            ma_prev = ma_series.iloc[-2]    # 전일
+            return (ma_prev2, ma_prev)
+            
         except Exception as e:
             self.logger.error(f"{period}일 이동평균 계산 실패 ({stock_code}): {str(e)}")
             return None
@@ -302,27 +314,15 @@ class KRTrader(BaseTrader):
         """매수 조건을 확인합니다."""
         try:
             # 5일과 지정된 기간의 이동평균선 계산
-            ma5 = self.calculate_ma(stock_code, 5)
-            ma_target = self.calculate_ma(stock_code, ma_period)
+            ma5_values = self.calculate_ma(stock_code, 5)
+            ma_target_values = self.calculate_ma(stock_code, ma_period)
             
-            if ma5 is None or ma_target is None:
+            if ma5_values is None or ma_target_values is None:
                 return False, None
                 
-            # 전일 데이터 조회
-            end_date = datetime.now(self.kr_timezone).strftime("%Y%m%d")
-            start_date = (datetime.now(self.kr_timezone) - timedelta(days=2)).strftime("%Y%m%d")
-            
-            df = self.kr_api.get_daily_price(stock_code, start_date, end_date)
-            if df is None or len(df) < 2:
-                return False, None
-                
-            # 전일과 전전일의 5일 이동평균선
-            ma5_prev = df['clos'].rolling(window=5).mean().iloc[-2]  # 전일
-            ma5_prev2 = df['clos'].rolling(window=5).mean().iloc[-3]  # 전전일
-            
-            # 전일과 전전일의 지정된 이동평균선
-            ma_target_prev = df['clos'].rolling(window=ma_period).mean().iloc[-2]  # 전일
-            ma_target_prev2 = df['clos'].rolling(window=ma_period).mean().iloc[-3]  # 전전일
+            # 전전일과 전일 이동평균값 추출
+            ma5_prev2, ma5_prev = ma5_values
+            ma_target_prev2, ma_target_prev = ma_target_values
             
             # 골든크로스 조건 확인
             # 전전일: 5일선 < 지정된 이평선
@@ -334,7 +334,7 @@ class KRTrader(BaseTrader):
                 self.logger.info(f"- 전전일: 5일선(₩{ma5_prev2:.2f}) < {ma_period}일선(₩{ma_target_prev2:.2f})")
                 self.logger.info(f"- 전일: 5일선(₩{ma5_prev:.2f}) > {ma_period}일선(₩{ma_target_prev:.2f})")
             
-            return golden_cross, ma_target
+            return golden_cross, ma_target_prev
             
         except Exception as e:
             self.logger.error(f"매수 조건 확인 중 오류 발생 ({stock_code}): {str(e)}")
@@ -342,10 +342,13 @@ class KRTrader(BaseTrader):
     
     def check_sell_condition(self, stock_code: str, ma_period: int, prev_close: float) -> tuple[bool, Optional[float]]:
         """매도 조건을 확인합니다."""
-        ma = self.calculate_ma(stock_code, ma_period)
-        if ma is None:
+        ma_values = self.calculate_ma(stock_code, ma_period)
+        if ma_values is None:
             return False, None
-        return bool(prev_close < ma), ma
+        
+        # 전일 이동평균값 사용
+        _, ma_prev = ma_values
+        return bool(prev_close < ma_prev), ma_prev
     
     def _is_rebalancing_day(self) -> bool:
         """리밸런싱 실행 여부를 확인합니다.

@@ -62,6 +62,7 @@ class TradeHistoryManager:
            - stock_name: 종목명
            - first_buy_date: 첫 매수일
            - last_sell_date: 마지막 매도일
+           - highest_price: 최고가
            - all_sold: 전량 매도 여부
         """
         conn = sqlite3.connect(self.db_path)
@@ -95,6 +96,7 @@ class TradeHistoryManager:
             stock_name TEXT NOT NULL,              -- 종목명
             first_buy_date TEXT,                   -- 첫 매수일
             last_sell_date TEXT,                   -- 마지막 매도일
+            highest_price REAL DEFAULT 0,          -- 최고가
             all_sold BOOLEAN DEFAULT 1             -- 전량 매도 여부
         )
         ''')
@@ -176,6 +178,7 @@ class TradeHistoryManager:
             trade_data (Dict[str, Any]): 거래 데이터
         """
         stock_code = trade_data["stock_code"]
+        price = trade_data["price"]
         
         # 미국장의 경우 거래소 코드 제외 (코드.거래소 형식에서 코드만 추출)
         if self.market_type.upper() == "USA" and "." in stock_code:
@@ -185,9 +188,27 @@ class TradeHistoryManager:
         
         # 종목 정보 조회 또는 생성
         cursor.execute('''
-        INSERT OR IGNORE INTO stock_history (stock_code, stock_name, first_buy_date, last_sell_date, all_sold)
-        VALUES (?, ?, NULL, NULL, 1)
+        INSERT OR IGNORE INTO stock_history (stock_code, stock_name, first_buy_date, last_sell_date, highest_price, all_sold)
+        VALUES (?, ?, NULL, NULL, 0, 1)
         ''', (stock_code, trade_data["stock_name"]))
+        
+        # 현재 최고가 조회
+        cursor.execute('''
+        SELECT highest_price
+        FROM stock_history
+        WHERE stock_code = ?
+        ''', (stock_code,))
+        
+        current_highest = cursor.fetchone()
+        current_highest_price = current_highest[0] if current_highest and current_highest[0] is not None else 0
+        
+        # 현재 가격이 최고가보다 높은 경우 최고가 업데이트
+        if price > current_highest_price:
+            cursor.execute('''
+            UPDATE stock_history
+            SET highest_price = ?
+            WHERE stock_code = ?
+            ''', (price, stock_code))
         
         if trade_data["trade_action"] == "BUY":
             # 첫 매수일 업데이트 (없거나 전량 매도 후 다시 매수하는 경우)
@@ -362,4 +383,76 @@ class TradeHistoryManager:
             
         except Exception as e:
             print(f"거래 내역 조회 중 오류 발생: {str(e)}")
-            return [] 
+            return []
+    
+    def update_highest_price(self, stock_code: str, price: float) -> None:
+        """종목의 최고가를 업데이트합니다.
+        
+        Args:
+            stock_code (str): 종목 코드
+            price (float): 가격
+        """
+        try:
+            # 미국장의 경우 거래소 코드 제외 (코드.거래소 형식에서 코드만 추출)
+            if self.market_type.upper() == "USA" and "." in stock_code:
+                stock_code = stock_code.split(".")[0]
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # 현재 최고가 조회
+            cursor.execute('''
+            SELECT highest_price
+            FROM stock_history
+            WHERE stock_code = ?
+            ''', (stock_code,))
+            
+            current_highest = cursor.fetchone()
+            
+            # 종목이 존재하고 새 가격이 기존 최고가보다 높은 경우에만 업데이트
+            if current_highest:
+                current_highest_price = current_highest[0] or 0
+                if price > current_highest_price:
+                    cursor.execute('''
+                    UPDATE stock_history
+                    SET highest_price = ?
+                    WHERE stock_code = ?
+                    ''', (price, stock_code))
+                    conn.commit()
+            
+            conn.close()
+            
+        except Exception as e:
+            print(f"최고가 업데이트 중 오류 발생: {str(e)}")
+    
+    def get_highest_price(self, stock_code: str) -> float:
+        """종목의 최고가를 조회합니다.
+        
+        Args:
+            stock_code (str): 종목 코드
+            
+        Returns:
+            float: 최고가
+        """
+        try:
+            # 미국장의 경우 거래소 코드 제외 (코드.거래소 형식에서 코드만 추출)
+            if self.market_type.upper() == "USA" and "." in stock_code:
+                stock_code = stock_code.split(".")[0]
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            SELECT highest_price
+            FROM stock_history
+            WHERE stock_code = ?
+            ''', (stock_code,))
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            return result[0] if result and result[0] is not None else 0
+            
+        except Exception as e:
+            print(f"최고가 조회 중 오류 발생: {str(e)}")
+            return 0 

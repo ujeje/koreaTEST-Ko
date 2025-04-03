@@ -10,37 +10,51 @@ from src.overseas.kis_us_api import KISUSAPIManager
 from src.utils.trade_history_manager import TradeHistoryManager
 import time
 import exchange_calendars as xcals
+import logging
 
 class USTrader(BaseTrader):
     """미국 주식 트레이더"""
     
     def __init__(self, config_path: str):
-        """
-        Args:
-            config_path (str): 설정 파일 경로
-        """
-        super().__init__(config_path, "USA")
-        self.us_api = KISUSAPIManager(config_path)
-        self.trade_history = TradeHistoryManager("USA")
-        self.load_settings()
-        self.us_timezone = pytz.timezone("America/New_York")
-        self.last_api_call = 0
-        self.api_call_interval = 1.0  # API 호출 간격 (초)
-        self.max_retries = 3  # 최대 재시도 횟수
+        """미국 주식 트레이더를 초기화합니다."""
+        super().__init__("USA")
+        self.config_path = config_path
         
-        # 최고가 캐시 관련 변수 추가
-        self.highest_price_cache = {}  # 종목별 최고가 캐시
-        self.highest_price_cache_date = None  # 최고가 캐시 갱신 날짜
+        # API 키 로드
+        with open(self.config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            
+        # API 클라이언트 초기화
+        self.us_api = StockApiClient(config["api_key"], config["secret_key"])
+        self.us_timezone = pytz.timezone("America/New_York")
+        
+        # 마지막 API 호출 시간
+        self.last_api_call_time = 0
+        
+        # 거래 내역 관리자 초기화
+        self.trade_history = TradeHistoryManager("USA")
+        
+        # 로깅 설정
+        self.logger = logging.getLogger("USTrader")
+        
+        # 매매 설정 로드
+        self.settings = {}
+        self.portfolio = None
+        self.load_settings()
+        
+        # 오늘 매도된 종목 캐싱
+        self.sold_stocks_cache = set()
+        self.sold_stocks_cache_time = 0
         
         self.logger.info(f"미국 시장 시간 설정: {self.config['trading']['usa_market_start']} ~ {self.config['trading']['usa_market_end']}")
     
     def _wait_for_api_call(self):
         """API 호출 간격을 제어합니다."""
         current_time = time.time()
-        elapsed = current_time - self.last_api_call
+        elapsed = current_time - self.last_api_call_time
         if elapsed < self.api_call_interval:
             time.sleep(self.api_call_interval - elapsed)
-        self.last_api_call = time.time()
+        self.last_api_call_time = time.time()
 
     def _retry_api_call(self, func, *args, **kwargs):
         """API 호출을 재시도합니다."""
@@ -139,8 +153,12 @@ class USTrader(BaseTrader):
         close_end = str(int(end_time) - 20).zfill(4)
         return close_start <= current_time <= close_end
         
-    def calculate_ma(self, stock_code: str, period: int = 20) -> Optional[float]:
-        """이동평균선을 계산합니다."""
+    def calculate_ma(self, stock_code: str, period: int = 20) -> Optional[tuple]:
+        """이동평균선을 계산합니다.
+        
+        Returns:
+            Optional[tuple]: (전전일 이동평균값, 전일 이동평균값) 또는 None
+        """
         try:
             end_date = datetime.now(self.us_timezone).strftime("%Y%m%d")
             # 이동평균 계산을 위해 필요한 데이터 기간 (기본 2배로 설정)
@@ -155,11 +173,15 @@ class USTrader(BaseTrader):
             # 필요한 기간이 100일 이하인 경우 한 번에 조회
             if required_days <= 100:
                 df = self.us_api.get_daily_price(stock_code, start_date, end_date)
-                if df is None or len(df) < period:
+                if df is None or len(df) < period + 1:  # 최소한 period+1개의 데이터가 필요
                     return None
                     
-                ma = df['clos'].rolling(window=period).mean().iloc[-2]  # 전일 종가의 이동평균값
-                return ma
+                # 이동평균 계산
+                ma_series = df['clos'].astype(float).rolling(window=period).mean()
+                # 전전일, 전일 이동평균값 반환
+                ma_prev2 = ma_series.iloc[-3]  # 전전일
+                ma_prev = ma_series.iloc[-2]    # 전일
+                return (ma_prev2, ma_prev)
             
             # 필요한 기간이 100일 초과인 경우 분할 조회
             while current_end_date.replace(tzinfo=None) >= start_datetime.replace(tzinfo=None):
@@ -201,13 +223,17 @@ class USTrader(BaseTrader):
                 combined_df = combined_df.sort_values('xymd', ascending=True).reset_index(drop=True)
             
             # 데이터가 충분한지 확인
-            if len(combined_df) < period:
-                self.logger.warning(f"{stock_code}: 이동평균 계산을 위한 데이터가 부족합니다. (필요: {period}일, 실제: {len(combined_df)}일)")
+            if len(combined_df) < period + 1:  # 최소한 period+1개의 데이터가 필요
+                self.logger.warning(f"{stock_code}: 이동평균 계산을 위한 데이터가 부족합니다. (필요: {period+1}일, 실제: {len(combined_df)}일)")
                 return None
             
             # 이동평균 계산
-            ma = combined_df['clos'].astype(float).rolling(window=period).mean().iloc[-2]  # 전일 종가의 이동평균값
-            return ma
+            ma_series = combined_df['clos'].astype(float).rolling(window=period).mean()
+            # 전전일, 전일 이동평균값 반환
+            ma_prev2 = ma_series.iloc[-3]  # 전전일
+            ma_prev = ma_series.iloc[-2]    # 전일
+            return (ma_prev2, ma_prev)
+            
         except Exception as e:
             self.logger.error(f"{period}일 이동평균 계산 실패 ({stock_code}): {str(e)}")
             return None
@@ -218,17 +244,8 @@ class USTrader(BaseTrader):
             # 현재 날짜 확인
             current_date = datetime.now(self.us_timezone).strftime("%Y-%m-%d")
             
-            # 캐시가 오늘 날짜의 데이터이고, 해당 종목의 최고가가 캐시에 있으면 캐시된 값 반환
-            if (self.highest_price_cache_date == current_date and 
-                stock_code in self.highest_price_cache):
-                self.logger.debug(f"캐시된 최고가 사용: {stock_code}, {self.highest_price_cache[stock_code]}")
-                return self.highest_price_cache[stock_code]
-            
-            # 날짜가 변경되었으면 캐시 초기화
-            if self.highest_price_cache_date != current_date:
-                self.highest_price_cache = {}
-                self.highest_price_cache_date = current_date
-                self.logger.info(f"최고가 캐시 초기화 (날짜 변경: {current_date})")
+            # 먼저 데이터베이스에서 저장된 최고가 확인
+            db_highest_price = self.trade_history.get_highest_price(stock_code)
             
             # 최초 매수일 조회
             first_buy_date = self.trade_history.get_first_buy_date(stock_code)
@@ -276,9 +293,9 @@ class USTrader(BaseTrader):
                 if current_end_date.replace(tzinfo=None) < first_date:
                     break
             
-            # 조회된 데이터가 없는 경우
+            # 조회된 데이터가 없는 경우 데이터베이스에 저장된 최고가 반환
             if not all_data:
-                return 0
+                return db_highest_price
             
             # 모든 데이터 합치기
             combined_df = pd.concat(all_data, ignore_index=True)
@@ -291,43 +308,35 @@ class USTrader(BaseTrader):
                                      (combined_df['xymd'] <= pd.to_datetime(end_date.strftime('%Y-%m-%d')))]
             
             # 최고가 계산
-            highest_price = combined_df['high'].astype(float).max()
+            api_highest_price = combined_df['high'].astype(float).max()
             
-            # 캐시에 저장
-            self.highest_price_cache[stock_code] = highest_price
-            self.logger.debug(f"최고가 캐시 업데이트: {stock_code}, {highest_price}")
+            # 데이터베이스의 최고가와 API에서 조회한 최고가 중 더 높은 값을 사용
+            highest_price = max(db_highest_price, api_highest_price)
+            
+            # 데이터베이스 최고가 업데이트
+            if highest_price > db_highest_price:
+                self.trade_history.update_highest_price(stock_code, highest_price)
+                self.logger.debug(f"최고가 데이터베이스 업데이트: {stock_code}, {highest_price}")
             
             return highest_price
             
         except Exception as e:
             self.logger.error(f"최고가 조회 실패 ({stock_code}): {str(e)}")
             return 0
-        
+    
     def check_buy_condition(self, stock_code: str, ma_period: int, prev_close: float) -> tuple[bool, Optional[float]]:
         """매수 조건을 확인합니다."""
         try:
             # 5일과 지정된 기간의 이동평균선 계산
-            ma5 = self.calculate_ma(stock_code, 5)
-            ma_target = self.calculate_ma(stock_code, ma_period)
+            ma5_values = self.calculate_ma(stock_code, 5)
+            ma_target_values = self.calculate_ma(stock_code, ma_period)
             
-            if ma5 is None or ma_target is None:
+            if ma5_values is None or ma_target_values is None:
                 return False, None
                 
-            # 전일 데이터 조회
-            end_date = datetime.now(self.us_timezone).strftime("%Y%m%d")
-            start_date = (datetime.now(self.us_timezone) - timedelta(days=2)).strftime("%Y%m%d")
-            
-            df = self.us_api.get_daily_price(stock_code, start_date, end_date)
-            if df is None or len(df) < 2:
-                return False, None
-                
-            # 전일과 전전일의 5일 이동평균선
-            ma5_prev = df['clos'].rolling(window=5).mean().iloc[-2]  # 전일
-            ma5_prev2 = df['clos'].rolling(window=5).mean().iloc[-3]  # 전전일
-            
-            # 전일과 전전일의 지정된 이동평균선
-            ma_target_prev = df['clos'].rolling(window=ma_period).mean().iloc[-2]  # 전일
-            ma_target_prev2 = df['clos'].rolling(window=ma_period).mean().iloc[-3]  # 전전일
+            # 전전일과 전일 이동평균값 추출
+            ma5_prev2, ma5_prev = ma5_values
+            ma_target_prev2, ma_target_prev = ma_target_values
             
             # 골든크로스 조건 확인
             # 전전일: 5일선 < 지정된 이평선
@@ -339,18 +348,21 @@ class USTrader(BaseTrader):
                 self.logger.info(f"- 전전일: 5일선(${ma5_prev2:.2f}) < {ma_period}일선(${ma_target_prev2:.2f})")
                 self.logger.info(f"- 전일: 5일선(${ma5_prev:.2f}) > {ma_period}일선(${ma_target_prev:.2f})")
             
-            return golden_cross, ma_target
+            return golden_cross, ma_target_prev
             
         except Exception as e:
             self.logger.error(f"매수 조건 확인 중 오류 발생 ({stock_code}): {str(e)}")
             return False, None
-        
+    
     def check_sell_condition(self, stock_code: str, ma_period: int, prev_close: float) -> tuple[bool, Optional[float]]:
         """매도 조건을 확인합니다."""
-        ma = self.calculate_ma(stock_code, ma_period)
-        if ma is None:
+        ma_values = self.calculate_ma(stock_code, ma_period)
+        if ma_values is None:
             return False, None
-        return bool(prev_close < ma), ma
+            
+        # 전일 이동평균값 사용
+        _, ma_prev = ma_values
+        return bool(prev_close < ma_prev), ma_prev
         
     def get_today_sold_stocks(self) -> List[str]:
         """API를 통해 당일 매도한 종목 코드 목록을 조회합니다.
@@ -1337,17 +1349,10 @@ class USTrader(BaseTrader):
                         msg += f"\n- 트레일링 스탑: 현재가 기준 {abs(self.settings['trailing_stop']):.1f}% 하락 시 매도"
                         self.logger.info(msg)
                 
-                # 현재가를 새로운 최고가로 사용
+                # 현재가를 새로운 최고가로 사용하고 데이터베이스에 저장
                 highest_price = current_price
-                
-                # 최고가 캐시 업데이트 (당일 최고가 유지를 위해)
-                current_date = datetime.now(self.us_timezone).strftime("%Y-%m-%d")
-                if self.highest_price_cache_date != current_date:
-                    self.highest_price_cache = {}
-                    self.highest_price_cache_date = current_date
-                
-                self.highest_price_cache[stock_code] = current_price
-                self.logger.debug(f"최고가 캐시 업데이트: {stock_code}, ${current_price:.2f}")
+                self.trade_history.update_highest_price(stock_code, current_price)
+                self.logger.debug(f"최고가 데이터베이스 업데이트: {stock_code}, ${current_price:.2f}")
             else:
                 # 목표가(trailing_start) 초과 여부 확인
                 profit_pct = (highest_price - entry_price) / entry_price * 100
