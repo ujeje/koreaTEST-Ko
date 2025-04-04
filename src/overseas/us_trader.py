@@ -17,15 +17,11 @@ class USTrader(BaseTrader):
     
     def __init__(self, config_path: str):
         """미국 주식 트레이더를 초기화합니다."""
-        super().__init__("USA")
+        super().__init__(config_path, "USA")
         self.config_path = config_path
-        
-        # API 키 로드
-        with open(self.config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
             
         # API 클라이언트 초기화
-        self.us_api = StockApiClient(config["api_key"], config["secret_key"])
+        self.us_api = KISUSAPIManager(config_path)
         self.us_timezone = pytz.timezone("America/New_York")
         
         # 마지막 API 호출 시간
@@ -143,18 +139,16 @@ class USTrader(BaseTrader):
         return start_time <= current_time <= str(int(start_time) + 10).zfill(4)
         
     def _is_market_close_time(self) -> bool:
-        """종가 매수 시점인지 확인합니다."""
-        # 미국 현지 시간으로 확인
-        current_time = datetime.now(self.us_timezone).strftime('%H%M')
-        end_time = self.config['trading']['usa_market_end']
-
-        # 장 마감 30분 전부터 10분 동안
-        close_start = str(int(end_time) - 30).zfill(4)
-        close_end = str(int(end_time) - 20).zfill(4)
-        return close_start <= current_time <= close_end
+        """장 마감 시간인지 확인합니다."""
+        return False  # 종가 매수 로직 사용하지 않음
         
-    def calculate_ma(self, stock_code: str, period: int = 20) -> Optional[tuple]:
+    def calculate_ma(self, stock_code: str, period: int = 20, period_div_code: str = "D") -> Optional[tuple]:
         """이동평균선을 계산합니다.
+        
+        Args:
+            stock_code (str): 종목코드
+            period (int): 이동평균 기간
+            period_div_code (str): 기간 구분 코드 (D: 일봉, W: 주봉)
         
         Returns:
             Optional[tuple]: (전전일 이동평균값, 전일 이동평균값) 또는 None
@@ -162,7 +156,11 @@ class USTrader(BaseTrader):
         try:
             end_date = datetime.now(self.us_timezone).strftime("%Y%m%d")
             # 이동평균 계산을 위해 필요한 데이터 기간 (기본 2배로 설정)
+            # 주간 데이터일 경우 더 긴 기간 필요
             required_days = period * 2
+            if period_div_code == "W":
+                required_days = period * 14  # 주간 데이터는 더 긴 기간 필요
+                
             start_date = (datetime.now(self.us_timezone) - timedelta(days=required_days)).strftime("%Y%m%d")
             
             # API 제한(100일)을 고려하여 데이터 조회
@@ -172,7 +170,7 @@ class USTrader(BaseTrader):
             
             # 필요한 기간이 100일 이하인 경우 한 번에 조회
             if required_days <= 100:
-                df = self.us_api.get_daily_price(stock_code, start_date, end_date)
+                df = self.us_api.get_daily_price(stock_code, start_date, end_date, period_div_code)
                 if df is None or len(df) < period + 1:  # 최소한 period+1개의 데이터가 필요
                     return None
                     
@@ -196,10 +194,10 @@ class USTrader(BaseTrader):
                 current_start_date_str = current_start_date.strftime("%Y%m%d")
                 current_end_date_str = current_end_date.strftime("%Y%m%d")
                 
-                self.logger.debug(f"이동평균 계산을 위한 일별 시세 조회: {stock_code}, {current_start_date_str} ~ {current_end_date_str}")
+                self.logger.debug(f"이동평균 계산을 위한 시세 조회: {stock_code}, {current_start_date_str} ~ {current_end_date_str}, 주기: {period_div_code}")
                 
                 # API 호출하여 데이터 조회
-                df = self.us_api.get_daily_price(stock_code, current_start_date_str, current_end_date_str)
+                df = self.us_api.get_daily_price(stock_code, current_start_date_str, current_end_date_str, period_div_code)
                 if df is not None and len(df) > 0:
                     all_data.append(df)
                 
@@ -224,7 +222,7 @@ class USTrader(BaseTrader):
             
             # 데이터가 충분한지 확인
             if len(combined_df) < period + 1:  # 최소한 period+1개의 데이터가 필요
-                self.logger.warning(f"{stock_code}: 이동평균 계산을 위한 데이터가 부족합니다. (필요: {period+1}일, 실제: {len(combined_df)}일)")
+                self.logger.warning(f"{stock_code}: 이동평균 계산을 위한 데이터가 부족합니다. (필요: {period+1}개, 실제: {len(combined_df)}개, 주기: {period_div_code})")
                 return None
             
             # 이동평균 계산
@@ -235,7 +233,7 @@ class USTrader(BaseTrader):
             return (ma_prev2, ma_prev)
             
         except Exception as e:
-            self.logger.error(f"{period}일 이동평균 계산 실패 ({stock_code}): {str(e)}")
+            self.logger.error(f"{period}일 이동평균 계산 실패 ({stock_code}, 주기: {period_div_code}): {str(e)}")
             return None
     
     def get_highest_price_since_first_buy(self, stock_code: str) -> float:
@@ -324,46 +322,140 @@ class USTrader(BaseTrader):
             self.logger.error(f"최고가 조회 실패 ({stock_code}): {str(e)}")
             return 0
     
-    def check_buy_condition(self, stock_code: str, ma_period: int, prev_close: float) -> tuple[bool, Optional[float]]:
-        """매수 조건을 확인합니다."""
+    def check_buy_condition(self, stock_code: str, ma_period: int, prev_close: float, 
+                           ma_condition: str = "종가", period_div_code: str = "D") -> tuple[bool, Optional[float]]:
+        """매수 조건을 확인합니다.
+        
+        Args:
+            stock_code (str): 종목코드
+            ma_period (int): 이동평균 기간
+            prev_close (float): 전일 종가
+            ma_condition (str): 매수 조건 ("종가" 또는 이평선 기간)
+            period_div_code (str): 기간 구분 코드 (D: 일봉, W: 주봉)
+        
+        Returns:
+            tuple[bool, Optional[float]]: (매수 조건 충족 여부, 이동평균값)
+        """
         try:
-            # 5일과 지정된 기간의 이동평균선 계산
-            ma5_values = self.calculate_ma(stock_code, 5)
-            ma_target_values = self.calculate_ma(stock_code, ma_period)
+            # 이동평균 값 계산
+            ma_target_values = self.calculate_ma(stock_code, ma_period, period_div_code)
             
-            if ma5_values is None or ma_target_values is None:
+            if ma_target_values is None:
                 return False, None
-                
+            
             # 전전일과 전일 이동평균값 추출
-            ma5_prev2, ma5_prev = ma5_values
             ma_target_prev2, ma_target_prev = ma_target_values
             
-            # 골든크로스 조건 확인
-            # 전전일: 5일선 < 지정된 이평선
-            # 전일: 5일선 > 지정된 이평선
-            golden_cross = (ma5_prev2 < ma_target_prev2) and (ma5_prev > ma_target_prev)
+            # "종가" 조건: 전일 종가가 이동평균선 상향 돌파
+            if ma_condition == "종가":
+                # 전일 종가가 이동평균선을 상향 돌파했는지 확인
+                # 즉, prev_close > ma_target_prev
+                is_buy = prev_close > ma_target_prev
+                if is_buy:
+                    self.logger.info(f"매수 조건 충족: {stock_code} - 전일 종가(${prev_close:.2f})가 {ma_period}일선(${ma_target_prev:.2f})을 상향돌파")
+                return is_buy, ma_target_prev
             
-            if golden_cross:
-                self.logger.info(f"골든크로스 발생: {stock_code}")
-                self.logger.info(f"- 전전일: 5일선(${ma5_prev2:.2f}) < {ma_period}일선(${ma_target_prev2:.2f})")
-                self.logger.info(f"- 전일: 5일선(${ma5_prev:.2f}) > {ma_period}일선(${ma_target_prev:.2f})")
-            
-            return golden_cross, ma_target_prev
+            # 골든크로스 조건: ma_condition에 지정된 이평선이 기준 이평선을 상향 돌파
+            else:
+                try:
+                    # 조건으로 지정된 이평선 기간을 정수로 변환
+                    condition_period = int(ma_condition)
+                    # 조건 이평선 값 계산
+                    ma_condition_values = self.calculate_ma(stock_code, condition_period, period_div_code)
+                    
+                    if ma_condition_values is None:
+                        return False, ma_target_prev
+                    
+                    # 전전일과 전일 이동평균값 추출
+                    ma_condition_prev2, ma_condition_prev = ma_condition_values
+                    
+                    # 골든크로스 조건 확인
+                    # 전전일: 조건 이평선 < 기준 이평선
+                    # 전일: 조건 이평선 > 기준 이평선
+                    golden_cross = (ma_condition_prev2 < ma_target_prev2) and (ma_condition_prev > ma_target_prev)
+                    
+                    if golden_cross:
+                        self.logger.info(f"골든크로스 발생: {stock_code}")
+                        self.logger.info(f"- 전전일: {condition_period}일선(${ma_condition_prev2:.2f}) < {ma_period}일선(${ma_target_prev2:.2f})")
+                        self.logger.info(f"- 전일: {condition_period}일선(${ma_condition_prev:.2f}) > {ma_period}일선(${ma_target_prev:.2f})")
+                    
+                    return golden_cross, ma_target_prev
+                    
+                except (ValueError, TypeError):
+                    self.logger.error(f"매수 조건 확인 중 오류: {ma_condition}이 유효한 이평선 기간이 아닙니다.")
+                    return False, ma_target_prev
             
         except Exception as e:
             self.logger.error(f"매수 조건 확인 중 오류 발생 ({stock_code}): {str(e)}")
             return False, None
     
-    def check_sell_condition(self, stock_code: str, ma_period: int, prev_close: float) -> tuple[bool, Optional[float]]:
-        """매도 조건을 확인합니다."""
-        ma_values = self.calculate_ma(stock_code, ma_period)
-        if ma_values is None:
-            return False, None
-            
-        # 전일 이동평균값 사용
-        _, ma_prev = ma_values
-        return bool(prev_close < ma_prev), ma_prev
+    def check_sell_condition(self, stock_code: str, ma_period: int, prev_close: float, 
+                            ma_condition: str = "종가", period_div_code: str = "D") -> tuple[bool, Optional[float]]:
+        """매도 조건을 확인합니다.
         
+        Args:
+            stock_code (str): 종목코드
+            ma_period (int): 이동평균 기간
+            prev_close (float): 전일 종가
+            ma_condition (str): 매도 조건 ("종가" 또는 이평선 기간)
+            period_div_code (str): 기간 구분 코드 (D: 일봉, W: 주봉)
+        
+        Returns:
+            tuple[bool, Optional[float]]: (매도 조건 충족 여부, 이동평균값)
+        """
+        try:
+            # 이동평균 값 계산
+            ma_target_values = self.calculate_ma(stock_code, ma_period, period_div_code)
+            
+            if ma_target_values is None:
+                return False, None
+            
+            # 전전일과 전일 이동평균값 추출
+            ma_target_prev2, ma_target_prev = ma_target_values
+            
+            # "종가" 조건: 전일 종가가 이동평균선 하향 돌파
+            if ma_condition == "종가":
+                # 전일 종가가 이동평균선 아래에 있는지 확인
+                # 즉, prev_close < ma_target_prev
+                is_sell = prev_close < ma_target_prev
+                if is_sell:
+                    self.logger.info(f"매도 조건 충족: {stock_code} - 전일 종가(${prev_close:.2f})가 {ma_period}일선(${ma_target_prev:.2f}) 아래로 하향돌파")
+                return is_sell, ma_target_prev
+            
+            # 데드크로스 조건: ma_condition에 지정된 이평선이 기준 이평선을 하향 돌파
+            else:
+                try:
+                    # 조건으로 지정된 이평선 기간을 정수로 변환
+                    condition_period = int(ma_condition)
+                    # 조건 이평선 값 계산
+                    ma_condition_values = self.calculate_ma(stock_code, condition_period, period_div_code)
+                    
+                    if ma_condition_values is None:
+                        return False, ma_target_prev
+                    
+                    # 전전일과 전일 이동평균값 추출
+                    ma_condition_prev2, ma_condition_prev = ma_condition_values
+                    
+                    # 데드크로스 조건 확인
+                    # 전전일: 조건 이평선 > 기준 이평선
+                    # 전일: 조건 이평선 < 기준 이평선
+                    dead_cross = (ma_condition_prev2 > ma_target_prev2) and (ma_condition_prev < ma_target_prev)
+                    
+                    if dead_cross:
+                        self.logger.info(f"데드크로스 발생: {stock_code}")
+                        self.logger.info(f"- 전전일: {condition_period}일선(${ma_condition_prev2:.2f}) > {ma_period}일선(${ma_target_prev2:.2f})")
+                        self.logger.info(f"- 전일: {condition_period}일선(${ma_condition_prev:.2f}) < {ma_period}일선(${ma_target_prev:.2f})")
+                    
+                    return dead_cross, ma_target_prev
+                    
+                except (ValueError, TypeError):
+                    self.logger.error(f"매도 조건 확인 중 오류: {ma_condition}이 유효한 이평선 기간이 아닙니다.")
+                    return False, ma_target_prev
+                
+        except Exception as e:
+            self.logger.error(f"매도 조건 확인 중 오류 발생 ({stock_code}): {str(e)}")
+            return False, None
+    
     def get_today_sold_stocks(self) -> List[str]:
         """API를 통해 당일 매도한 종목 코드 목록을 조회합니다.
         
@@ -619,84 +711,51 @@ class USTrader(BaseTrader):
     def execute_trade(self):
         """매매를 실행합니다."""
         try:
-            now = datetime.now(self.us_timezone)
-            current_date = now.date()
+            # 현재 날짜 및 시간 확인
+            now = datetime.now()
             
             # 당일 최초 실행 여부 확인 및 초기화
-            if self.execution_date != current_date:
-                self.execution_date = current_date
+            if self.execution_date != now.strftime("%Y-%m-%d"):
+                self.execution_date = now.strftime("%Y-%m-%d")
                 self.market_open_executed = False
-                self.market_close_executed = False
                 self.sold_stocks_cache = []  # 당일 매도 종목 캐시 초기화
                 self.sold_stocks_cache_time = 0  # 캐시 시간 초기화
                 self.logger.info(f"=== {self.execution_date} 매매 시작 ===")
             
-            # 장 운영 시간이 아니면 스킵
-            if not self.check_market_condition():
-                return
-            
-            # 계좌 잔고 조회
-            balance = self._retry_api_call(self.us_api.get_account_balance)
-            if balance is None:
-                self.logger.error("계좌 잔고 조회 실패")
-                return
-            
-            # 0. 스탑로스/트레일링 스탑 체크 (최우선 실행)
+            # 1. 스탑로스/트레일링 스탑 체크 (매 루프마다 실행)
             self._check_stop_conditions()
             
-            # 장 시작 매매 조건
-            is_market_open = self._is_market_open_time() and not self.market_open_executed
-            # 종가 매수 조건
-            is_market_close = self._is_market_close_time() and not self.market_close_executed
+            # 2. 장 상태 체크
+            is_market_open = self._is_market_open_time()
             
-            # 1. 장 시작 시점에 매도 조건 체크 및 실행
-            if is_market_open:
-                self.logger.info(f"[미국 시장] 장 시작 매매 시점 도달")
-                self.logger.info(f"1. 매도 조건 체크 시작")
+            # 3. 장 시작 시 매매 실행 (아직 실행되지 않은 경우)
+            if is_market_open and not self.market_open_executed:
+                self.logger.info(f"장 시작 매매 실행")
                 
-                # 매도 조건 체크 및 실행
-                self._process_sell_conditions(balance)
-                
-                # 매도 후 잔고 다시 조회
+                # 계좌 잔고 조회
                 balance = self._retry_api_call(self.us_api.get_account_balance)
                 if balance is None:
                     self.logger.error("계좌 잔고 조회 실패")
                     return
                 
-                # 2. 리밸런싱 체크 및 실행 (매도 이후에 실행)
-                if self._is_rebalancing_day():
-                    self.logger.info(f"2. 리밸런싱 실행")
-                    self._rebalance_portfolio(balance)
-                    
-                    # 리밸런싱 후 잔고 다시 조회
-                    balance = self._retry_api_call(self.us_api.get_account_balance)
-                    if balance is None:
-                        self.logger.error("계좌 잔고 조회 실패")
-                        return
+                # 3-1. 매도 조건 처리
+                self._process_sell_conditions(balance)
                 
-                # 3. 시가 매수 실행
-                self.logger.info(f"3. 시가 매수 실행")
-                self.logger.info(f"미국 시장은 매수 종목의 {self.settings['market_open_ratio']*100:.0f}%를 장 시작 시점에 매수합니다.")
-                self._process_buy_conditions(balance, is_market_open=True, is_market_close=False)
+                # 3-2. 리밸런싱 체크 및 실행
+                if self._is_rebalancing_day():
+                    self.logger.info("리밸런싱 실행")
+                    self._rebalance_portfolio(balance)
+                
+                # 3-3. 매수 조건 처리
+                self._process_buy_conditions(balance)
                 
                 self.market_open_executed = True
                 self.logger.info("장 시작 매매 실행 완료")
             
-            # 4. 종가 매수 실행
-            elif is_market_close:
-                self.logger.info(f"[미국 시장] 장 종료 매매 시점 도달")
-                self.logger.info(f"4. 종가 매수 실행")
-                self.logger.info(f"미국 시장은 매수 종목의 {self.settings['market_close_ratio']*100:.0f}%를 장 종료 시점에 매수합니다.")
-                
-                # 종가 매수 실행
-                self._process_buy_conditions(balance, is_market_open=False, is_market_close=True)
-                
-                self.market_close_executed = True
-                self.logger.info("종가 매매 실행 완료")
-            
         except Exception as e:
             error_msg = f"매매 실행 중 오류 발생: {str(e)}"
             self.logger.error(error_msg)
+            raise
     
     def _process_sell_conditions(self, balance: Dict):
         """매도 조건 처리"""
@@ -792,28 +851,29 @@ class USTrader(BaseTrader):
         except Exception as e:
             self.logger.error(f"매도 조건 처리 중 오류 발생: {str(e)}")
     
-    def _process_buy_conditions(self, balance: Dict, is_market_open: bool, is_market_close: bool):
+    def _process_buy_conditions(self, balance: Dict):
         """매수 조건을 체크하고 실행합니다."""
         try:
             # 개별 종목 매수
             for _, row in self.individual_stocks.iterrows():
                 if row['거래소'] != "KOR":  # 미국 주식만 처리
-                    self._process_single_stock_buy(row, balance, is_market_open, is_market_close)
+                    self._process_single_stock_buy(row, balance)
             
             # POOL 종목 매수
             for _, row in self.pool_stocks.iterrows():
                 if row['거래소'] != "KOR":  # 미국 주식만 처리
-                    self._process_single_stock_buy(row, balance, is_market_open, is_market_close)
+                    self._process_single_stock_buy(row, balance)
         
         except Exception as e:
             self.logger.error(f"매수 조건 체크 중 오류 발생: {str(e)}")
     
-    def _process_single_stock_buy(self, row: pd.Series, balance: Dict, is_market_open: bool, is_market_close: bool):
+    def _process_single_stock_buy(self, row: pd.Series, balance: Dict):
         """단일 종목의 매수를 처리합니다."""
         try:
             # 거래소와 종목코드 결합
             stock_code = f"{row['종목코드']}.{row['거래소']}"
-            ma_period = int(row['매매기준']) if row['매매기준'] and str(row['매매기준']).strip() != '' else 20
+            ma_period = int(row['매수기준']) if row['매수기준'] and str(row['매수기준']).strip() != '' else 20
+            ma_condition = row.get('매수조건', '종가')  # 기본값은 '종가'
             allocation_ratio = float(row['배분비율']) / 100 if row['배분비율'] and str(row['배분비율']).strip() != '' else 0.1
             
             # 현재가 조회 (재시도 로직 적용)
@@ -828,277 +888,92 @@ class USTrader(BaseTrader):
             holdings = [h for h in balance['output1'] if h['ovrs_pdno'] == stock_code.split('.')[0]]
             is_holding = len(holdings) > 0
             
-            # 시가 매수 처리
-            if is_market_open:
-                # 이미 보유 중이면 매수하지 않음
-                if is_holding:
-                    return
-                
-                # 당일 매도한 종목은 스킵
-                if self.is_sold_today(stock_code):
-                    self.logger.info(f"{row['종목명']}({stock_code}) - 당일 매도 종목 재매수 제한")
-                    return
-                
-                # 트레일링 스탑으로 매도된 종목 체크
-                trailing_stop_price = self.get_trailing_stop_sell_price(stock_code.split('.')[0])
-                if trailing_stop_price is not None:
-                    if current_price < trailing_stop_price:
-                        msg = f"트레일링 스탑 매도 종목 재매수 제한 - {row['종목명']}({stock_code})"
-                        msg += f"\n- 현재가(${current_price:.2f})가 트레일링 스탑 매도가(${trailing_stop_price:.2f}) 미만"
-                        self.logger.info(msg)
-                        return
-                    else:
-                        msg = f"트레일링 스탑 매도 종목 재매수 가능 - {row['종목명']}({stock_code})"
-                        msg += f"\n- 현재가(${current_price:.2f})가 트레일링 스탑 매도가(${trailing_stop_price:.2f}) 이상"
-                        self.logger.info(msg)
-
-                should_buy, ma = self.check_buy_condition(stock_code, ma_period, prev_close)
-                if should_buy and ma is not None:
-                    # 당일 매도 종목 체크
-                    if self.is_sold_today(stock_code):
-                        msg = f"당일 매도 종목 재매수 제한 - {row['종목명']}({stock_code})"
-                        self.logger.info(msg)
-                        return
-                    
-                    trade_msg = f"매수 조건 성립 - {row['종목명']}({stock_code}): 5일선이 {ma_period}일선을 상향돌파"
-                    self.logger.info(trade_msg)
-                    
-                    # 최대 보유 종목 수 체크 (개별 종목과 POOL 종목 각각 체크)
-                    total_individual_holdings = len([h for h in balance['output1'] if int(h.get('ord_psbl_qty', 0)) > 0 and any(s['종목코드'] == h['ovrs_pdno'].split('.')[0] for _, s in self.individual_stocks.iterrows())])
-                    total_pool_holdings = len([h for h in balance['output1'] if int(h.get('ord_psbl_qty', 0)) > 0 and any(s['종목코드'] == h['ovrs_pdno'].split('.')[0] for _, s in self.pool_stocks.iterrows())])
-                    
-                    # 현재 종목이 개별 종목인지 POOL 종목인지 확인
-                    is_individual = any(s['종목코드'] == stock_code.split('.')[0] for _, s in self.individual_stocks.iterrows())
-                    max_stocks = self.settings['max_individual_stocks'] if is_individual else self.settings['max_pool_stocks']
-                    current_holdings = total_individual_holdings if is_individual else total_pool_holdings
-                    
-                    if current_holdings >= max_stocks:
-                        msg = f"최대 보유 종목 수({max_stocks}개) 초과로 매수 보류: {row['종목명']}"
-                        self.logger.info(msg)
-                        return
-                    
-                    buyable_data = self._retry_api_call(self.us_api.get_psbl_amt, stock_code)
-                    if buyable_data is None:
-                        return
-                    
-                    # 주문가능금액 확인
-                    available_cash = float(buyable_data['output']['frcr_ord_psbl_amt1'])     #주문가능금액 - 외화인경우 "ord_psbl_frcr_amt" / 원화인경우 "frcr_ord_psbl_amt1"
-                    total_balance = self._retry_api_call(self.us_api.get_total_balance)
-                    if total_balance is None:
-                        return
-                    # 총자산금액을 환율로 나누어 달러로 환산
-                    total_assets = float(total_balance['output3']['tot_asst_amt']) / float([x['frst_bltn_exrt'] for x in total_balance['output2'] if x['crcy_cd'] == 'USD'][0])
-                    
-                    # 매수 가능 금액 계산
-                    buy_amount = total_assets * allocation_ratio
-                    total_quantity = int(buy_amount / current_price)
-                    
-                    if total_quantity <= 0:
-                        msg = f"매수 자금 부족 - {row['종목명']}({stock_code})"
-                        msg += f"\n[시가 매수] 필요자금: ${current_price:.2f}/주 | 가용자금: ${buy_amount*self.settings['market_open_ratio']:.2f}"
-                        msg += f"\n[종가 매수] 필요자금: ${current_price:.2f}/주 | 가용자금: ${buy_amount*self.settings['market_close_ratio']:.2f}"
-                        self.logger.info(msg)
-                        return
-                    
-                    # 현금 부족 시 POOL 종목 매도 로직
-                    market_quantity = int(total_quantity * self.settings['market_open_ratio'])
-                    required_cash = market_quantity * current_price
-                    
-                    if required_cash > available_cash and is_individual:
-                        self.logger.info(f"현금 부족: 필요 금액 ${required_cash:.2f}, 가용 금액 ${available_cash:.2f}")
-                        self.logger.info(f"POOL 종목 매도를 통한 현금 확보 시도")
-                        
-                        # POOL 종목 보유 현황 확인
-                        pool_holdings = []
-                        for holding in balance['output1']:
-                            if int(holding.get('ord_psbl_qty', 0)) > 0:
-                                stock_code_only = holding['ovrs_pdno']
-                                # POOL 종목인지 확인
-                                pool_match = self.pool_stocks[self.pool_stocks['종목코드'] == stock_code_only]
-                                if not pool_match.empty:
-                                    # 현재가 조회
-                                    exchange = holding.get('ovrs_excg_cd', '')
-                                    full_code = f"{stock_code_only}.{exchange}"
-                                    price_data = self._retry_api_call(self.us_api.get_stock_price, full_code)
-                                    if price_data is not None:
-                                        current_price_pool = float(price_data['output']['last'])
-                                        quantity_pool = int(holding['ord_psbl_qty'])
-                                        value = current_price_pool * quantity_pool
-                                        
-                                        pool_holdings.append({
-                                            'code': full_code,
-                                            'name': holding['ovrs_item_name'],
-                                            'quantity': quantity_pool,
-                                            'price': current_price_pool,
-                                            'value': value
-                                        })
-                        
-                        # 구글 스프레드시트 순서의 역순으로 정렬 (마지막에 추가된 종목부터 매도)
-                        pool_codes = self.pool_stocks['종목코드'].tolist()
-                        pool_holdings.sort(key=lambda x: pool_codes.index(x['code'].split('.')[0]) if x['code'].split('.')[0] in pool_codes else float('inf'), reverse=True)
-                        
-                        cash_to_secure = required_cash - available_cash
-                        secured_cash = 0
-                        sold_stocks = []
-                        
-                        # 필요한 현금을 확보할 때까지 POOL 종목 매도
-                        for pool_stock in pool_holdings:
-                            if secured_cash >= cash_to_secure:
-                                break
-                                
-                            sell_quantity = pool_stock['quantity']
-                            expected_cash = sell_quantity * pool_stock['price']
-                            
-                            # 매도 시 지정가의 1% 낮게 설정하여 시장가처럼 거래
-                            sell_price = pool_stock['price'] * 0.99
-                            
-                            # 매도 주문 실행
-                            result = self._retry_api_call(
-                                self.us_api.order_stock,
-                                pool_stock['code'],
-                                "SELL",
-                                sell_quantity,
-                                sell_price
-                            )
-                            
-                            if result:
-                                secured_cash += expected_cash
-                                sold_stocks.append(f"{pool_stock['name']}({pool_stock['code']}) {sell_quantity}주 (${expected_cash:.2f})")
-                                self.logger.info(f"현금 확보를 위한 POOL 종목 매도: {pool_stock['name']}({pool_stock['code']}) {sell_quantity}주 (${expected_cash:.2f})")
-                                
-                                # 거래 내역 저장
-                                trade_data = {
-                                    "trade_type": "SELL",
-                                    "trade_action": "SELL",
-                                    "stock_code": pool_stock['code'],
-                                    "stock_name": pool_stock['name'],
-                                    "quantity": sell_quantity,
-                                    "price": pool_stock['price'],
-                                    "total_amount": expected_cash,
-                                    "reason": f"현금 확보를 위한 POOL 종목 매도 (개별 종목 {row['종목명']} 매수 자금 확보)"
-                                }
-                                self.trade_history.add_trade(trade_data)
-                                
-                                # 캐시 초기화하여 다음 API 호출 시 최신 정보 조회하도록 함
-                                self.sold_stocks_cache_time = 0
-                        
-                        if secured_cash >= cash_to_secure:
-                            self.logger.info(f"현금 확보 성공: ${secured_cash:.2f} (필요 금액: ${cash_to_secure:.2f})")
-                            self.logger.info(f"매도한 POOL 종목: {', '.join(sold_stocks)}")
-                            
-                            # 매도 후 충분한 시간 대기 (주문 체결 시간 고려)
-                            self.logger.info("매도 주문 체결 대기 중... (5초)")
-                            time.sleep(5)  # 매도 주문 체결을 위해 5초 대기
-                            
-                            # 주문가능금액 다시 확인
-                            buyable_data = self._retry_api_call(self.us_api.get_psbl_amt, stock_code)
-                            if buyable_data is None:
-                                return
-                            available_cash = float(buyable_data['output']['frcr_ord_psbl_amt1'])
-                        else:
-                            self.logger.info(f"현금 확보 실패: ${secured_cash:.2f} (필요 금액: ${cash_to_secure:.2f})")
-                            # 현금 확보 실패 시에도 계속 진행 (남은 현금으로 최대한 매수)
-                            self.logger.info(f"남은 현금으로 최대한 매수 시도")
-                    
-                    # 현금 부족 시에도 가능한 최대 수량 계산
-                    if available_cash < required_cash:
-                        # 시가 매수 수량 재계산 (가용 현금 기준)
-                        market_quantity = int(available_cash / current_price)
-                        self.logger.info(f"현금 부족으로 매수 수량 조정: {total_quantity} -> {market_quantity}주 (시가 매수)")
-                    
-                    if market_quantity > 0:
-                        # 매수 시 지정가의 1% 높게 설정하여 시장가처럼 거래
-                        buy_price = current_price * 1.01
-                        
-                        result = self._retry_api_call(self.us_api.order_stock, stock_code, "BUY", market_quantity, buy_price)
-                        if result:
-                            msg = f"매수 주문 실행: {row['종목명']}({stock_code}) {market_quantity}주 (지정가: ${current_price:,.2f})"
-                            msg += f"\n- 매수 사유: 5일선이 {ma_period}일선을 상향돌파"
-                            msg += f"\n- 매수 정보: 주문가 ${current_price:,.2f} / 총금액 ${current_price * market_quantity:,.2f}"
-                            msg += f"\n- 배분비율: {allocation_ratio*100}% (총자산 ${total_assets:,.2f} 중 ${buy_amount:,.2f})"
-                            msg += f"\n- 이동평균: {ma_period}일선 ${ma:.2f}"
-                            msg += f"\n- 계좌 상태: 총평가금액 ${total_assets:,.2f}"
-                            msg += f"\n- 종가 매수 예정: {total_quantity - market_quantity}주 (전체 목표 수량의 {self.settings['market_close_ratio']*100:.0f}%)"
-                            self.logger.info(msg)
-                            
-                            # 거래 내역 저장
-                            trade_data = {
-                                "trade_type": "BUY",
-                                "trade_action": "BUY",
-                                "stock_code": stock_code,
-                                "stock_name": row['종목명'],
-                                "quantity": market_quantity,
-                                "price": current_price,
-                                "total_amount": current_price * market_quantity,
-                                "ma_period": ma_period,
-                                "ma_value": ma,
-                                "reason": f"5일선이 {ma_period}일선을 상향돌파",
-                                "allocation_ratio": allocation_ratio
-                            }
-                            self.trade_history.add_trade(trade_data)
+            # 장 시작 시 매수 처리
+            if is_holding:
+                return
             
-            # 종가 매수 처리
-            elif is_market_close:
-                # 당일 매수 종목인지 확인 (API를 통해 당일 체결 내역 조회)
-                executed_orders = self._retry_api_call(self.us_api.get_today_executed_orders, stock_code)
-                if executed_orders is None or 'output' not in executed_orders or not executed_orders['output']:
+            # 당일 매도한 종목은 스킵
+            if self.is_sold_today(stock_code):
+                self.logger.info(f"{row['종목명']}({stock_code}) - 당일 매도 종목 재매수 제한")
+                return
+            
+            # 트레일링 스탑으로 매도된 종목 체크
+            trailing_stop_price = self.get_trailing_stop_sell_price(stock_code.split('.')[0])
+            if trailing_stop_price is not None:
+                if current_price < trailing_stop_price:
+                    msg = f"트레일링 스탑 매도 종목 재매수 제한 - {row['종목명']}({stock_code})"
+                    msg += f"\n- 현재가(${current_price:.2f})가 트레일링 스탑 매도가(${trailing_stop_price:.2f}) 미만"
+                    self.logger.info(msg)
+                    return
+                else:
+                    msg = f"트레일링 스탑 매도 종목 재매수 가능 - {row['종목명']}({stock_code})"
+                    msg += f"\n- 현재가(${current_price:.2f})가 트레일링 스탑 매도가(${trailing_stop_price:.2f}) 이상"
+                    self.logger.info(msg)
+
+            # 종목 유형에 따라 일간/주간 데이터 사용
+            is_individual = any(s['종목코드'] == stock_code.split('.')[0] for _, s in self.individual_stocks.iterrows())
+            period_div_code = "D" if is_individual else "W"  # 개별 종목은 일봉, POOL 종목은 주봉
+            
+            # 매수 조건 체크
+            should_buy, ma = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
+            
+            if should_buy and ma is not None:
+                # 당일 매도 종목 체크
+                if self.is_sold_today(stock_code):
+                    msg = f"당일 매도 종목 재매수 제한 - {row['종목명']}({stock_code})"
+                    self.logger.info(msg)
                     return
                 
-                # 당일 매수 체결 내역 확인 - 현재 종목에 대한 매수 내역만 필터링
-                stock_code_only = stock_code.split('.')[0]  # 거래소 코드 제외한 종목코드만 추출
+                buy_msg = f"매수 조건 성립 - {row['종목명']}({stock_code})"
+                period_unit = "일선" if period_div_code == "D" else "주선"
                 
-                buy_orders = [order for order in executed_orders['output'] 
-                             if order['sll_buy_dvsn_cd'] == '02'  # 매수 주문만 필터링
-                             and int(order['ft_ccld_qty']) > 0    # 체결된 주문만 필터링
-                             and order['pdno'] == stock_code_only]  # 현재 종목에 대한 주문만 필터링
+                if ma_condition == "종가":
+                    buy_msg += f": 전일 종가(${prev_close:.2f})가 {ma_period}{period_unit}(${ma:.2f})을 상향돌파"
+                else:
+                    buy_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 골든크로스"
+                self.logger.info(buy_msg)
                 
-                if not buy_orders:
-                    # 당일 시가에 매수한 내역이 없으면 종가 매수 불필요
-                    #self.logger.info(f"종가 매수 불필요: {row['종목명']}({stock_code}) - 당일 시가 매수 내역 없음")
+                # 최대 보유 종목 수 체크 (개별 종목과 POOL 종목 각각 체크)
+                total_individual_holdings = len([h for h in balance['output1'] if int(h.get('ord_psbl_qty', 0)) > 0 and any(s['종목코드'] == h['ovrs_pdno'].split('.')[0] for _, s in self.individual_stocks.iterrows())])
+                total_pool_holdings = len([h for h in balance['output1'] if int(h.get('ord_psbl_qty', 0)) > 0 and any(s['종목코드'] == h['ovrs_pdno'].split('.')[0] for _, s in self.pool_stocks.iterrows())])
+                
+                # 현재 종목이 개별 종목인지 POOL 종목인지 확인
+                max_stocks = self.settings['max_individual_stocks'] if is_individual else self.settings['max_pool_stocks']
+                current_holdings = total_individual_holdings if is_individual else total_pool_holdings
+                
+                if current_holdings >= max_stocks:
+                    msg = f"최대 보유 종목 수({max_stocks}개) 초과로 매수 보류: {row['종목명']}"
+                    self.logger.info(msg)
                     return
                 
-                # 이평선 조건 충족 여부 확인
-                should_buy, ma = self.check_buy_condition(stock_code, ma_period, prev_close)
-                if not should_buy:
-                    # 이평선 조건을 충족하지 않으면 종가 매수 불필요
-                    self.logger.info(f"종가 매수 불필요: {row['종목명']}({stock_code}) - 골든크로스 조건 미충족")
-                    return
-                
-                # 당일 매수 수량 합계 계산
-                total_bought = sum(int(order['ft_ccld_qty']) for order in buy_orders)
-                
-                # 종목의 총 목표 수량 계산
                 buyable_data = self._retry_api_call(self.us_api.get_psbl_amt, stock_code)
                 if buyable_data is None:
                     return
                 
+                # 주문가능금액 확인
+                available_cash = float(buyable_data['output']['frcr_ord_psbl_amt1'])     #주문가능금액 - 외화인경우 "ord_psbl_frcr_amt" / 원화인경우 "frcr_ord_psbl_amt1"
                 total_balance = self._retry_api_call(self.us_api.get_total_balance)
                 if total_balance is None:
                     return
-                
                 # 총자산금액을 환율로 나누어 달러로 환산
                 total_assets = float(total_balance['output3']['tot_asst_amt']) / float([x['frst_bltn_exrt'] for x in total_balance['output2'] if x['crcy_cd'] == 'USD'][0])
                 
-                # 매수 가능 금액 계산
+                # 매수 금액 계산 (총자산 * 배분비율)
                 buy_amount = total_assets * allocation_ratio
-                total_target_quantity = int(buy_amount / current_price)
+                total_quantity = int(buy_amount / current_price)
                 
-                # 종가 매수 목표 수량 계산 (전체 목표 수량의 종가 매수 비율)
-                market_close_quantity = int(total_target_quantity * self.settings['market_close_ratio'])
-                
-                # 추가 매수 수량 계산 (종가 매수 목표 수량)
-                additional_quantity = market_close_quantity
-                
-                if additional_quantity <= 0:
+                if total_quantity <= 0:
+                    msg = f"매수 자금 부족 - {row['종목명']}({stock_code})"
+                    msg += f"\n필요자금: ${current_price:.2f}/주 | 가용자금: ${buy_amount:.2f}"
+                    self.logger.info(msg)
                     return
                 
-                # 현금 확인 및 필요 시 POOL 종목 매도
-                required_cash = additional_quantity * current_price
-                available_cash = float(buyable_data['output']['frcr_ord_psbl_amt1'])
+                # 현금 부족 시 POOL 종목 매도 로직
+                required_cash = total_quantity * current_price
                 
-                if required_cash > available_cash:
-                    self.logger.info(f"종가 매수 - 현금 부족: 필요 금액 ${required_cash:.2f}, 가용 금액 ${available_cash:.2f}")
-                    self.logger.info(f"종가 매수 - POOL 종목 매도를 통한 현금 확보 시도")
+                if required_cash > available_cash and is_individual:
+                    self.logger.info(f"현금 부족: 필요 금액 ${required_cash:.2f}, 가용 금액 ${available_cash:.2f}")
+                    self.logger.info(f"POOL 종목 매도를 통한 현금 확보 시도")
                     
                     # POOL 종목 보유 현황 확인
                     pool_holdings = []
@@ -1156,7 +1031,7 @@ class USTrader(BaseTrader):
                         if result:
                             secured_cash += expected_cash
                             sold_stocks.append(f"{pool_stock['name']}({pool_stock['code']}) {sell_quantity}주 (${expected_cash:.2f})")
-                            self.logger.info(f"종가 매수 - 현금 확보를 위한 POOL 종목 매도: {pool_stock['name']}({pool_stock['code']}) {sell_quantity}주 (${expected_cash:.2f})")
+                            self.logger.info(f"현금 확보를 위한 POOL 종목 매도: {pool_stock['name']}({pool_stock['code']}) {sell_quantity}주 (${expected_cash:.2f})")
                             
                             # 거래 내역 저장
                             trade_data = {
@@ -1167,32 +1042,19 @@ class USTrader(BaseTrader):
                                 "quantity": sell_quantity,
                                 "price": pool_stock['price'],
                                 "total_amount": expected_cash,
-                                "reason": f"종가 매수 - 현금 확보를 위한 POOL 종목 매도 (개별 종목 {row['종목명']} 매수 자금 확보)"
+                                "reason": f"현금 확보를 위한 POOL 종목 매도 (개별 종목 {row['종목명']} 매수 자금 확보)"
                             }
                             self.trade_history.add_trade(trade_data)
-                        
-                    # 충분한 현금을 확보하지 못한 경우에도 가능한 최대 수량으로 매수 진행
-                    if secured_cash < cash_to_secure:
-                        self.logger.info(f"종가 매수 - 충분한 현금 확보 실패 (필요: ${cash_to_secure:.2f}, 확보: ${secured_cash:.2f})")
-                        self.logger.info(f"종가 매수 - 남은 현금으로 최대한 매수 시도")
-                        
-                        # 주문가능금액 다시 확인
-                        buyable_data = self._retry_api_call(self.us_api.get_psbl_amt, stock_code)
-                        if buyable_data is None:
-                            return
-                        available_cash = float(buyable_data['output']['frcr_ord_psbl_amt1'])
-                        
-                        # 가능한 최대 수량 재계산
-                        additional_quantity = int(available_cash / current_price)
-                        if additional_quantity <= 0:
-                            self.logger.info(f"종가 매수 취소: {row['종목명']}({stock_code}) - 매수 가능 수량 없음")
-                            return
-                    else:
-                        self.logger.info(f"종가 매수 - 현금 확보 성공: ${secured_cash:.2f} (필요: ${cash_to_secure:.2f})")
-                        self.logger.info(f"종가 매수 - 매도한 POOL 종목: {', '.join(sold_stocks)}")
+                            
+                            # 캐시 초기화하여 다음 API 호출 시 최신 정보 조회하도록 함
+                            self.sold_stocks_cache_time = 0
+                    
+                    if secured_cash >= cash_to_secure:
+                        self.logger.info(f"현금 확보 성공: ${secured_cash:.2f} (필요 금액: ${cash_to_secure:.2f})")
+                        self.logger.info(f"매도한 POOL 종목: {', '.join(sold_stocks)}")
                         
                         # 매도 후 충분한 시간 대기 (주문 체결 시간 고려)
-                        self.logger.info("종가 매수 - 매도 주문 체결 대기 중... (5초)")
+                        self.logger.info("매도 주문 체결 대기 중... (5초)")
                         time.sleep(5)  # 매도 주문 체결을 위해 5초 대기
                         
                         # 주문가능금액 다시 확인
@@ -1200,27 +1062,40 @@ class USTrader(BaseTrader):
                         if buyable_data is None:
                             return
                         available_cash = float(buyable_data['output']['frcr_ord_psbl_amt1'])
+                    else:
+                        self.logger.info(f"현금 확보 실패: ${secured_cash:.2f} (필요 금액: ${cash_to_secure:.2f})")
+                        # 현금 확보 실패 시에도 계속 진행 (남은 현금으로 최대한 매수)
+                        self.logger.info(f"남은 현금으로 최대한 매수 시도")
                 
                 # 현금 부족 시에도 가능한 최대 수량 계산
                 if available_cash < required_cash:
-                    # 종가 매수 수량 재계산 (가용 현금 기준)
-                    additional_quantity = int(available_cash / current_price)
-                    self.logger.info(f"종가 매수 - 현금 부족으로 매수 수량 조정: {market_close_quantity} -> {additional_quantity}주")
-                    
-                    if additional_quantity <= 0:
-                        self.logger.info(f"종가 매수 취소: {row['종목명']}({stock_code}) - 매수 가능 수량 없음")
-                        return
+                    # 매수 수량 재계산 (가용 현금 기준)
+                    buy_quantity = int(available_cash / current_price)
+                    self.logger.info(f"현금 부족으로 매수 수량 조정: {total_quantity} -> {buy_quantity}주")
+                else:
+                    # 전체 수량 매수
+                    buy_quantity = total_quantity
                 
-                # 종가 매수 실행
-                # 매수 시 지정가의 1% 높게 설정하여 시장가처럼 거래
-                buy_price = current_price * 1.01
+                if buy_quantity <= 0:
+                    self.logger.info(f"{row['종목명']}({stock_code}) - 매수 가능 수량이 0")
+                    return
                 
-                result = self._retry_api_call(self.us_api.order_stock, stock_code, "BUY", additional_quantity, buy_price)
+                # 매수 주문 실행
+                buy_price = current_price * 1.01  # 지정가의 1% 높게 설정하여 시장가처럼 거래
+                result = self._retry_api_call(
+                    self.us_api.order_stock,
+                    stock_code,
+                    "BUY",
+                    buy_quantity,
+                    buy_price
+                )
+                
                 if result:
-                    msg = f"종가 매수 주문 실행: {row['종목명']}({stock_code}) {additional_quantity}주 (지정가: ${current_price:.2f})"
-                    msg += f"\n- 매수 사유: 5일선이 {ma_period}일선을 상향돌파 종가 매수 (전체 목표의 {self.settings['market_close_ratio']*100:.0f}%)"
-                    msg += f"\n- 기존 매수: {total_bought}주 / 추가 매수: {additional_quantity}주 / 총 목표: {total_target_quantity}주"
-                    msg += f"\n- 매수 정보: 매수단가 ${current_price:,.2f} / 총금액 ${current_price * additional_quantity:,.2f}"
+                    msg = f"매수 주문 실행: {row['종목명']}({stock_code}) {buy_quantity}주"
+                    period_unit = "일선" if period_div_code == "D" else "주선"
+                    msg += f"\n- 매수 사유: 이동평균 상향돌파 (전일종가: ${prev_close:.2f} > {ma_period}{period_unit}: ${ma:.2f})"
+                    msg += f"\n- 매수 금액: ${buy_quantity * current_price:.2f}"
+                    msg += f"\n- 배분 비율: {allocation_ratio*100:.1f}%"
                     self.logger.info(msg)
                     
                     # 거래 내역 저장
@@ -1229,18 +1104,24 @@ class USTrader(BaseTrader):
                         "trade_action": "BUY",
                         "stock_code": stock_code,
                         "stock_name": row['종목명'],
-                        "quantity": additional_quantity,
+                        "quantity": buy_quantity,
                         "price": current_price,
-                        "total_amount": current_price * additional_quantity,
+                        "total_amount": buy_quantity * current_price,
                         "ma_period": ma_period,
                         "ma_value": ma,
-                        "reason": f"5일선이 {ma_period}일선을 상향돌파 종가 매수",
-                        "allocation_ratio": allocation_ratio
+                        "ma_condition": ma_condition,
+                        "period_div_code": period_div_code,
+                        "reason": f"{period_div_code}봉 기준 {ma_condition} {ma_period}{period_unit} 매수 조건 충족",
+                        "order_type": "BUY"
                     }
                     self.trade_history.add_trade(trade_data)
+                    
+                    self.logger.info(f"{row['종목명']}({stock_code}) - 매수 주문 성공")
+                else:
+                    self.logger.error(f"{row['종목명']}({stock_code}) - 매수 주문 실패")
         
         except Exception as e:
-            self.logger.error(f"개별 종목 매수 처리 중 오류 발생: {str(e)}")
+            self.logger.error(f"종목 매수 처리 중 오류 발생: {str(e)}")
     
     def _check_stop_conditions(self):
         """스탑로스와 트레일링 스탑 조건을 체크합니다."""

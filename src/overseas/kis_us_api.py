@@ -323,16 +323,17 @@ class KISUSAPIManager:
             logging.error(f"주문 실패: {response.text}")
             return None
     
-    def get_daily_price(self, stock_code: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+    def get_daily_price(self, stock_code: str, start_date: str, end_date: str, period_div_code: str = "D") -> Optional[pd.DataFrame]:
         """해외주식의 기간별시세를 조회합니다.
         
         Args:
             stock_code (str): 종목코드 (종목코드.거래소 형식)
             start_date (str): 시작일자 (YYYYMMDD)
             end_date (str): 종료일자 (YYYYMMDD)
+            period_div_code (str): 기간 구분 코드 (D: 일봉, W: 주봉)
             
         Returns:
-            Optional[pd.DataFrame]: 일별 주가 데이터프레임
+            Optional[pd.DataFrame]: 일별/주별 주가 데이터프레임
                 - xymd: 일자 (YYYYMMDD)
                 - clos: 종가
                 - sign: 대비기호 (1:상한, 2:상승, 3:보합, 4:하한, 5:하락)
@@ -366,11 +367,16 @@ class KISUSAPIManager:
                 "tr_id": "HHDFS76240000"
             }
             
+            # 기간 구분 코드 변환 (D->0(일봉), W->1(주봉))
+            gubn_code = "0"  # 기본값: 일봉
+            if period_div_code == "W":
+                gubn_code = "1"  # 주봉
+            
             params = {
                 "AUTH": "",                                # 사용자권한정보
                 "EXCD": self._get_exchange_code(stock_code),  # 거래소코드
                 "SYMB": self._get_symbol(stock_code),     # 종목코드
-                "GUBN": "0",                              # 0:일, 1:주, 2:월
+                "GUBN": gubn_code,                        # 0:일, 1:주, 2:월
                 "BYMD": end_date,                         # 조회 기준일자
                 "MODP": "1"                               # 수정주가 반영 여부 (1:반영)
             }
@@ -403,16 +409,16 @@ class KISUSAPIManager:
                         
                         return df
                     else:
-                        logging.error("일별 주가 데이터가 없습니다.")
+                        logging.error("주가 데이터가 없습니다.")
                 else:
                     error_msg = data.get('msg1', '알 수 없는 오류가 발생했습니다.')
-                    logging.error(f"일별 주가 조회 실패: {error_msg}")
+                    logging.error(f"주가 조회 실패: {error_msg}")
             else:
-                logging.error(f"일별 주가 조회 실패: {response.text}")
+                logging.error(f"주가 조회 실패: {response.text}")
             return None
             
         except Exception as e:
-            logging.error(f"일별 주가 조회 중 오류 발생: {str(e)}")
+            logging.error(f"주가 조회 중 오류 발생: {str(e)}")
             return None
     
     def _get_exchange_code(self, stock_code: str) -> str:

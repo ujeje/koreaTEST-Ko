@@ -230,7 +230,7 @@ class GoogleSheetManager:
             ).execute()
             
             values = result.get('values', [])
-            columns = ['거래소', '종목코드', '종목명', '매수시작', '매수종료', '배분비율', '매매기준']
+            columns = ['거래소', '종목코드', '종목명', '매수시작', '매수종료', '배분비율', '매수기준', '매수조건', '매수설명', '매도기준', '매도조건', '매도설명']
             if not values:
                 error_msg = "개별 종목 시트에 데이터가 없습니다. 설정을 확인해주세요."
                 self.logger.error(error_msg)
@@ -264,9 +264,16 @@ class GoogleSheetManager:
                 except (ValueError, TypeError):
                     return default
             
-            # 매매기준과 배분비율의 유효성 검사 및 변환
-            df['매매기준'] = df['매매기준'].apply(lambda x: safe_numeric_conversion(x, 20))
+            # 매수/매도 기준과 배분비율의 유효성 검사 및 변환
+            df['매수기준'] = df['매수기준'].apply(lambda x: safe_numeric_conversion(x, 20))
+            df['매도기준'] = df['매도기준'].apply(lambda x: safe_numeric_conversion(x, 20))
             df['배분비율'] = df['배분비율'].apply(lambda x: safe_numeric_conversion(x, 10))
+            
+            # 매수/매도 조건이 없는 경우 기본값 설정
+            if '매수조건' not in df.columns:
+                df['매수조건'] = '종가'
+            if '매도조건' not in df.columns:
+                df['매도조건'] = '종가'
             
             # 매수 기간이 유효한 종목만 필터링
             valid_period = df.apply(lambda x: self._check_trading_period(x['매수시작'], x['매수종료']), axis=1)
@@ -308,7 +315,7 @@ class GoogleSheetManager:
             ).execute()
             
             values = result.get('values', [])
-            columns = ['거래소', '종목코드', '종목명', '매수시작', '매수종료', '배분비율', '매매기준']
+            columns = ['거래소', '종목코드', '종목명', '매수시작', '매수종료', '배분비율', '매수기준', '매수조건', '매수설명', '매도기준', '매도조건', '매도설명']
             if not values:
                 error_msg = "POOL 종목 시트에 데이터가 없습니다. 설정을 확인해주세요."
                 self.logger.error(error_msg)
@@ -342,9 +349,16 @@ class GoogleSheetManager:
                 except (ValueError, TypeError):
                     return default
             
-            # 매매기준과 배분비율의 유효성 검사 및 변환
-            df['매매기준'] = df['매매기준'].apply(lambda x: safe_numeric_conversion(x, 20))
+            # 매수/매도 기준과 배분비율의 유효성 검사 및 변환
+            df['매수기준'] = df['매수기준'].apply(lambda x: safe_numeric_conversion(x, 20))
+            df['매도기준'] = df['매도기준'].apply(lambda x: safe_numeric_conversion(x, 20))
             df['배분비율'] = df['배분비율'].apply(lambda x: safe_numeric_conversion(x, 10))
+            
+            # 매수/매도 조건이 없는 경우 기본값 설정
+            if '매수조건' not in df.columns:
+                df['매수조건'] = '종가'
+            if '매도조건' not in df.columns:
+                df['매도조건'] = '종가'
             
             # 매수 기간이 유효한 종목만 필터링
             valid_period = df.apply(lambda x: self._check_trading_period(x['매수시작'], x['매수종료']), axis=1)

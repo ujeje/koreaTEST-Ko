@@ -413,16 +413,17 @@ class KISKRAPIManager:
             logging.error(f"주문 실패: {response.text}")
             return None
     
-    def get_daily_price(self, stock_code: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
-        """일별 주가 정보를 조회합니다.
+    def get_daily_price(self, stock_code: str, start_date: str, end_date: str, period_div_code: str = "D") -> Optional[pd.DataFrame]:
+        """일별/주별 주가 정보를 조회합니다.
         
         Args:
             stock_code (str): 종목코드
             start_date (str): 조회 시작일자 (YYYYMMDD)
             end_date (str): 조회 종료일자 (YYYYMMDD)
+            period_div_code (str): 기간 구분 코드 (D: 일봉, W: 주봉)
             
         Returns:
-            Optional[pd.DataFrame]: 일별 주가 데이터프레임
+            Optional[pd.DataFrame]: 일별/주별 주가 데이터프레임
         """
         try:
             access_token = self._check_token()
@@ -441,7 +442,7 @@ class KISKRAPIManager:
                 "FID_INPUT_ISCD": stock_code,
                 "FID_INPUT_DATE_1": start_date,
                 "FID_INPUT_DATE_2": end_date,
-                "FID_PERIOD_DIV_CODE": "D",  # D:일봉
+                "FID_PERIOD_DIV_CODE": period_div_code,  # D:일봉, W:주봉
                 "FID_ORG_ADJ_PRC": "0"       # 수정주가 여부 (0: 수정주가, 1: 원주가)
             }
             
@@ -468,11 +469,11 @@ class KISKRAPIManager:
                     return df
                 else:
                     error_msg = data.get('msg1', '알 수 없는 오류가 발생했습니다.')
-                    logging.error(f"일별 주가 조회 실패: {error_msg}")
+                    logging.error(f"주가 조회 실패: {error_msg}")
             else:
-                logging.error(f"일별 주가 조회 실패: {response.text}")
+                logging.error(f"주가 조회 실패: {response.text}")
             return None
             
         except Exception as e:
-            logging.error(f"일별 주가 조회 중 오류 발생: {str(e)}")
+            logging.error(f"주가 조회 중 오류 발생: {str(e)}")
             return None 

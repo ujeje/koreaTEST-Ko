@@ -73,57 +73,10 @@ class KRTrader(BaseTrader):
             if 'trailing_stop' not in self.settings:
                 self.settings['trailing_stop'] = -3.0  # 기본값 3%
             
-            # 매수/매도 시간 설정 (G8, G9 셀에서 가져옴)
-            buy_time = self.google_sheet.get_cell_value("G8", market_type="KOR")
-            sell_time = self.google_sheet.get_cell_value("G9", market_type="KOR")
-            
-            # 시간 형식 확인 및 변환 (HH:MM -> HHMM)
-            if buy_time and ":" in buy_time:
-                buy_time = buy_time.replace(":", "")
-            if sell_time and ":" in sell_time:
-                sell_time = sell_time.replace(":", "")
-                
-            # 시간 형식 정규화 함수
-            def normalize_time(time_str):
-                if not time_str:
-                    return None
-                
-                # 콜론이 있는 경우 (H:M 형식)
-                if ":" in time_str:
-                    hour, minute = time_str.split(":")
-                    # 시간과 분이 한 자리인 경우 두 자리로 변환
-                    hour = hour.zfill(2)
-                    minute = minute.zfill(2)
-                    return hour + minute
-                
-                # 숫자만 있는 경우
-                if time_str.isdigit():
-                    # 3자리 이하인 경우 (예: 130 -> 0130)
-                    if len(time_str) <= 3:
-                        return time_str.zfill(4)
-                    return time_str
-                
-                return None
-            
-            # 시간 형식 정규화
-            normalized_buy_time = normalize_time(buy_time)
-            normalized_sell_time = normalize_time(sell_time)
-            
-            # 유효한 시간 형식인지 확인하고 설정
-            if normalized_buy_time and len(normalized_buy_time) == 4:
-                self.settings['buy_time'] = normalized_buy_time
-            else:
-                self.settings['buy_time'] = '1435'  # 기본값 13:20
-                self.logger.warning(f"유효하지 않은 매수 시간 형식: {buy_time}, 기본값 13:20으로 설정")
-                
-            if normalized_sell_time and len(normalized_sell_time) == 4:
-                self.settings['sell_time'] = normalized_sell_time
-            else:
-                self.settings['sell_time'] = '0930'  # 기본값 09:30
-                self.logger.warning(f"유효하지 않은 매도 시간 형식: {sell_time}, 기본값 09:30으로 설정")
+
             
             self.logger.info(f"{self.market_type} 설정을 성공적으로 로드했습니다.")
-            self.logger.info(f"매수 시간: {self.settings['buy_time'][:2]}:{self.settings['buy_time'][2:]}, 매도 시간: {self.settings['sell_time'][:2]}:{self.settings['sell_time'][2:]}")
+
         except Exception as e:
             self.logger.error(f"{self.market_type} 설정 로드 실패: {str(e)}")
             raise
@@ -136,8 +89,13 @@ class KRTrader(BaseTrader):
         # 장 운영 시간 체크 (09:00 ~ 15:30)
         return self.config['trading']['kor_market_start'] <= current_time <= self.config['trading']['kor_market_end']
     
-    def calculate_ma(self, stock_code: str, period: int = 20) -> Optional[tuple]:
+    def calculate_ma(self, stock_code: str, period: int = 20, period_div_code: str = "D") -> Optional[tuple]:
         """이동평균을 계산합니다.
+        
+        Args:
+            stock_code (str): 종목코드
+            period (int): 이동평균 기간
+            period_div_code (str): 기간 구분 코드 (D: 일봉, W: 주봉)
         
         Returns:
             Optional[tuple]: (전전일 이동평균값, 전일 이동평균값) 또는 None
@@ -145,7 +103,11 @@ class KRTrader(BaseTrader):
         try:
             end_date = datetime.now().strftime("%Y%m%d")
             # 이동평균 계산을 위해 필요한 데이터 기간 (기본 2배로 설정)
+            # 주간 데이터일 경우 더 긴 기간 필요
             required_days = period * 2
+            if period_div_code == "W":
+                required_days = period * 14  # 주간 데이터는 더 긴 기간 필요
+            
             start_date = (datetime.now() - timedelta(days=required_days)).strftime("%Y%m%d")
             
             # API 제한(100일)을 고려하여 데이터 조회
@@ -155,7 +117,7 @@ class KRTrader(BaseTrader):
             
             # 필요한 기간이 100일 이하인 경우 한 번에 조회
             if required_days <= 100:
-                df = self.kr_api.get_daily_price(stock_code, start_date, end_date)
+                df = self.kr_api.get_daily_price(stock_code, start_date, end_date, period_div_code)
                 if df is None or len(df) < period + 1:  # 최소한 period+1개의 데이터가 필요
                     return None
                     
@@ -179,10 +141,10 @@ class KRTrader(BaseTrader):
                 current_start_date_str = current_start_date.strftime("%Y%m%d")
                 current_end_date_str = current_end_date.strftime("%Y%m%d")
                 
-                self.logger.debug(f"이동평균 계산을 위한 일별 시세 조회: {stock_code}, {current_start_date_str} ~ {current_end_date_str}")
+                self.logger.debug(f"이동평균 계산을 위한 시세 조회: {stock_code}, {current_start_date_str} ~ {current_end_date_str}, 주기: {period_div_code}")
                 
                 # API 호출하여 데이터 조회
-                df = self.kr_api.get_daily_price(stock_code, current_start_date_str, current_end_date_str)
+                df = self.kr_api.get_daily_price(stock_code, current_start_date_str, current_end_date_str, period_div_code)
                 if df is not None and len(df) > 0:
                     all_data.append(df)
                 
@@ -207,7 +169,7 @@ class KRTrader(BaseTrader):
             
             # 데이터가 충분한지 확인
             if len(combined_df) < period + 1:  # 최소한 period+1개의 데이터가 필요
-                self.logger.warning(f"{stock_code}: 이동평균 계산을 위한 데이터가 부족합니다. (필요: {period+1}일, 실제: {len(combined_df)}일)")
+                self.logger.warning(f"{stock_code}: 이동평균 계산을 위한 데이터가 부족합니다. (필요: {period+1}개, 실제: {len(combined_df)}개, 주기: {period_div_code})")
                 return None
             
             # 이동평균 계산
@@ -218,7 +180,7 @@ class KRTrader(BaseTrader):
             return (ma_prev2, ma_prev)
             
         except Exception as e:
-            self.logger.error(f"{period}일 이동평균 계산 실패 ({stock_code}): {str(e)}")
+            self.logger.error(f"{period}일 이동평균 계산 실패 ({stock_code}, 주기: {period_div_code}): {str(e)}")
             return None
     
     def get_highest_price_since_first_buy(self, stock_code: str) -> float:
@@ -310,45 +272,139 @@ class KRTrader(BaseTrader):
             self.logger.error(f"최고가 조회 실패 ({stock_code}): {str(e)}")
             return 0
     
-    def check_buy_condition(self, stock_code: str, ma_period: int, prev_close: float) -> tuple[bool, Optional[float]]:
-        """매수 조건을 확인합니다."""
+    def check_buy_condition(self, stock_code: str, ma_period: int, prev_close: float, 
+                           ma_condition: str = "종가", period_div_code: str = "D") -> tuple[bool, Optional[float]]:
+        """매수 조건을 확인합니다.
+        
+        Args:
+            stock_code (str): 종목코드
+            ma_period (int): 이동평균 기간
+            prev_close (float): 전일 종가
+            ma_condition (str): 매수 조건 ("종가" 또는 이평선 기간)
+            period_div_code (str): 기간 구분 코드 (D: 일봉, W: 주봉)
+        
+        Returns:
+            tuple[bool, Optional[float]]: (매수 조건 충족 여부, 이동평균값)
+        """
         try:
-            # 5일과 지정된 기간의 이동평균선 계산
-            ma5_values = self.calculate_ma(stock_code, 5)
-            ma_target_values = self.calculate_ma(stock_code, ma_period)
+            # 이동평균 값 계산
+            ma_target_values = self.calculate_ma(stock_code, ma_period, period_div_code)
             
-            if ma5_values is None or ma_target_values is None:
+            if ma_target_values is None:
                 return False, None
-                
+            
             # 전전일과 전일 이동평균값 추출
-            ma5_prev2, ma5_prev = ma5_values
             ma_target_prev2, ma_target_prev = ma_target_values
             
-            # 골든크로스 조건 확인
-            # 전전일: 5일선 < 지정된 이평선
-            # 전일: 5일선 > 지정된 이평선
-            golden_cross = (ma5_prev2 < ma_target_prev2) and (ma5_prev > ma_target_prev)
+            # "종가" 조건: 전일 종가가 이동평균선 상향 돌파
+            if ma_condition == "종가":
+                # 전일 종가가 이동평균선을 상향 돌파했는지 확인
+                # 즉, prev_close > ma_target_prev
+                is_buy = prev_close > ma_target_prev
+                if is_buy:
+                    self.logger.info(f"매수 조건 충족: {stock_code} - 전일 종가({prev_close:.2f})가 {ma_period}일선({ma_target_prev:.2f})을 상향돌파")
+                return is_buy, ma_target_prev
             
-            if golden_cross:
-                self.logger.info(f"골든크로스 발생: {stock_code}")
-                self.logger.info(f"- 전전일: 5일선(₩{ma5_prev2:.2f}) < {ma_period}일선(₩{ma_target_prev2:.2f})")
-                self.logger.info(f"- 전일: 5일선(₩{ma5_prev:.2f}) > {ma_period}일선(₩{ma_target_prev:.2f})")
-            
-            return golden_cross, ma_target_prev
+            # 골든크로스 조건: ma_condition에 지정된 이평선이 기준 이평선을 상향 돌파
+            else:
+                try:
+                    # 조건으로 지정된 이평선 기간을 정수로 변환
+                    condition_period = int(ma_condition)
+                    # 조건 이평선 값 계산
+                    ma_condition_values = self.calculate_ma(stock_code, condition_period, period_div_code)
+                    
+                    if ma_condition_values is None:
+                        return False, ma_target_prev
+                    
+                    # 전전일과 전일 이동평균값 추출
+                    ma_condition_prev2, ma_condition_prev = ma_condition_values
+                    
+                    # 골든크로스 조건 확인
+                    # 전전일: 조건 이평선 < 기준 이평선
+                    # 전일: 조건 이평선 > 기준 이평선
+                    golden_cross = (ma_condition_prev2 < ma_target_prev2) and (ma_condition_prev > ma_target_prev)
+                    
+                    if golden_cross:
+                        self.logger.info(f"골든크로스 발생: {stock_code}")
+                        self.logger.info(f"- 전전일: {condition_period}일선(₩{ma_condition_prev2:.2f}) < {ma_period}일선(₩{ma_target_prev2:.2f})")
+                        self.logger.info(f"- 전일: {condition_period}일선(₩{ma_condition_prev:.2f}) > {ma_period}일선(₩{ma_target_prev:.2f})")
+                    
+                    return golden_cross, ma_target_prev
+                    
+                except (ValueError, TypeError):
+                    self.logger.error(f"매수 조건 확인 중 오류: {ma_condition}이 유효한 이평선 기간이 아닙니다.")
+                    return False, ma_target_prev
             
         except Exception as e:
             self.logger.error(f"매수 조건 확인 중 오류 발생 ({stock_code}): {str(e)}")
             return False, None
     
-    def check_sell_condition(self, stock_code: str, ma_period: int, prev_close: float) -> tuple[bool, Optional[float]]:
-        """매도 조건을 확인합니다."""
-        ma_values = self.calculate_ma(stock_code, ma_period)
-        if ma_values is None:
-            return False, None
+    def check_sell_condition(self, stock_code: str, ma_period: int, prev_close: float, 
+                            ma_condition: str = "종가", period_div_code: str = "D") -> tuple[bool, Optional[float]]:
+        """매도 조건을 확인합니다.
         
-        # 전일 이동평균값 사용
-        _, ma_prev = ma_values
-        return bool(prev_close < ma_prev), ma_prev
+        Args:
+            stock_code (str): 종목코드
+            ma_period (int): 이동평균 기간
+            prev_close (float): 전일 종가
+            ma_condition (str): 매도 조건 ("종가" 또는 이평선 기간)
+            period_div_code (str): 기간 구분 코드 (D: 일봉, W: 주봉)
+        
+        Returns:
+            tuple[bool, Optional[float]]: (매도 조건 충족 여부, 이동평균값)
+        """
+        try:
+            # 이동평균 값 계산
+            ma_target_values = self.calculate_ma(stock_code, ma_period, period_div_code)
+            
+            if ma_target_values is None:
+                return False, None
+            
+            # 전전일과 전일 이동평균값 추출
+            ma_target_prev2, ma_target_prev = ma_target_values
+            
+            # "종가" 조건: 전일 종가가 이동평균선 하향 돌파
+            if ma_condition == "종가":
+                # 전일 종가가 이동평균선 아래에 있는지 확인
+                # 즉, prev_close < ma_target_prev
+                is_sell = prev_close < ma_target_prev
+                if is_sell:
+                    self.logger.info(f"매도 조건 충족: {stock_code} - 전일 종가({prev_close:.2f})가 {ma_period}일선({ma_target_prev:.2f}) 아래로 하향돌파")
+                return is_sell, ma_target_prev
+            
+            # 데드크로스 조건: ma_condition에 지정된 이평선이 기준 이평선을 하향 돌파
+            else:
+                try:
+                    # 조건으로 지정된 이평선 기간을 정수로 변환
+                    condition_period = int(ma_condition)
+                    # 조건 이평선 값 계산
+                    ma_condition_values = self.calculate_ma(stock_code, condition_period, period_div_code)
+                    
+                    if ma_condition_values is None:
+                        return False, ma_target_prev
+                    
+                    # 전전일과 전일 이동평균값 추출
+                    ma_condition_prev2, ma_condition_prev = ma_condition_values
+                    
+                    # 데드크로스 조건 확인
+                    # 전전일: 조건 이평선 > 기준 이평선
+                    # 전일: 조건 이평선 < 기준 이평선
+                    dead_cross = (ma_condition_prev2 > ma_target_prev2) and (ma_condition_prev < ma_target_prev)
+                    
+                    if dead_cross:
+                        self.logger.info(f"데드크로스 발생: {stock_code}")
+                        self.logger.info(f"- 전전일: {condition_period}일선(₩{ma_condition_prev2:.2f}) > {ma_period}일선(₩{ma_target_prev2:.2f})")
+                        self.logger.info(f"- 전일: {condition_period}일선(₩{ma_condition_prev:.2f}) < {ma_period}일선(₩{ma_target_prev:.2f})")
+                    
+                    return dead_cross, ma_target_prev
+                    
+                except (ValueError, TypeError):
+                    self.logger.error(f"매도 조건 확인 중 오류: {ma_condition}이 유효한 이평선 기간이 아닙니다.")
+                    return False, ma_target_prev
+                
+        except Exception as e:
+            self.logger.error(f"매도 조건 확인 중 오류 발생 ({stock_code}): {str(e)}")
+            return False, None
     
     def _is_rebalancing_day(self) -> bool:
         """리밸런싱 실행 여부를 확인합니다.
@@ -566,23 +622,24 @@ class KRTrader(BaseTrader):
                 self.sold_stocks_cache_time = 0  # 캐시 시간 초기화
                 self.logger.info(f"=== {self.execution_date} 매매 시작 ===")
             
-            # 매수/매도 시간 확인 (구글 스프레드시트에서 가져온 설정 사용)
-            buy_time = self.settings.get('buy_time', '1320')
-            sell_time = self.settings.get('sell_time', '0930')
-            
             # 1. 스탑로스/트레일링 스탑 체크 (매 루프마다 실행)
             self._check_stop_conditions()
             
-            # 2. 매도 시간에 매도 실행 (아직 실행되지 않은 경우, 지정 시간부터 10분간만 허용)
-            sell_end_time = f"{int(sell_time) + 10:04d}" if int(sell_time) % 100 < 50 else f"{int(sell_time) + 50:04d}"
-            if current_time >= sell_time and current_time <= sell_end_time and not self.market_close_executed:
-                self.logger.info(f"매도 시간 도달: {sell_time[:2]}:{sell_time[2:]}")
-                self._execute_sell_orders()
-                self.market_close_executed = True
+            # 장 시작 시간 체크 (09:00)
+            market_open_time = self.config['trading']['kor_market_start']
+            market_open_end_time = f"{int(market_open_time) + 10:04d}"  # 10분 이내
+            
+            # 장 시작 시간에 매매 실행 (아직 실행되지 않은 경우, 장 시작 시간부터 10분간만 허용)
+            if current_time >= market_open_time and current_time <= market_open_end_time and not self.market_open_executed:
+                self.logger.info(f"장 시작 시간 도달: {market_open_time[:2]}:{market_open_time[2:]}")
                 
-                # 매도 후 리밸런싱 체크 및 실행 (미국 시장과 동일하게 매도 후 리밸런싱 실행)
+                # 1. 시가 매도 실행
+                self.logger.info("1. 시가 매도 실행")
+                self._execute_sell_orders()
+                
+                # 2. 리밸런싱 체크 및 실행
                 if self._is_rebalancing_day():
-                    self.logger.info("리밸런싱 실행 날짜 조건 충족")
+                    self.logger.info("2. 리밸런싱 실행")
                     
                     # 계좌 잔고 조회
                     balance = self._retry_api_call(self.kr_api.get_account_balance)
@@ -590,13 +647,13 @@ class KRTrader(BaseTrader):
                         self._rebalance_portfolio(balance)
                     else:
                         self.logger.error("계좌 잔고 조회 실패로 리밸런싱을 실행할 수 없습니다.")
-            
-            # 3. 매수 시간에 매수 실행 (아직 실행되지 않은 경우, 지정 시간부터 10분간만 허용)
-            buy_end_time = f"{int(buy_time) + 10:04d}" if int(buy_time) % 100 < 50 else f"{int(buy_time) + 50:04d}"
-            if current_time >= buy_time and current_time <= buy_end_time and not self.market_open_executed:
-                self.logger.info(f"매수 시간 도달: {buy_time[:2]}:{buy_time[2:]}")
+                
+                # 3. 시가 매수 실행
+                self.logger.info("3. 시가 매수 실행")
                 self._execute_buy_orders()
+                
                 self.market_open_executed = True
+                self.logger.info("장 시작 매매 실행 완료")
                 
         except Exception as e:
             error_msg = f"매매 실행 중 오류 발생: {str(e)}"
@@ -636,7 +693,7 @@ class KRTrader(BaseTrader):
             for _, row in self.individual_stocks.iterrows():
                 stock_code = row['종목코드']
                 stock_name = row['종목명']
-                ma_period = int(row['매매기준'])
+                ma_period = int(row['매수기준'])
                 allocation_ratio = float(row['배분비율']) / 100
                 
                 # 이미 보유 중인 종목은 스킵
@@ -685,11 +742,18 @@ class KRTrader(BaseTrader):
                 current_price = float(price_data['output']['stck_prpr'])
                 prev_close = float(price_data['output']['stck_sdpr'])
                 
-                # 매수 조건 체크 (전일 종가가 이동평균선 위에 있는지)
-                is_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close)
+                # 매수 조건 체크 (개별 종목은 일간 데이터 사용)
+                ma_period = int(row['매수기준'])
+                ma_condition = row.get('매수조건', '종가')  # 기본값은 '종가'
+                is_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, "D")
                 
                 if is_buy:
-                    self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 충족: 5일선이 {ma_period}일선을 상향돌파")
+                    buy_msg = f"{stock_name}({stock_code}) - 매수 조건 충족"
+                    if ma_condition == "종가":
+                        buy_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}일선({ma_value:,.0f}원)을 상향돌파"
+                    else:
+                        buy_msg += f": {ma_condition}일선이 {ma_period}일선을 골든크로스"
+                    self.logger.info(buy_msg)
                     
                     # 매수 금액 계산 (현금 * 배분비율)
                     buy_amount = cash * allocation_ratio
@@ -708,13 +772,19 @@ class KRTrader(BaseTrader):
                             'ma_period': ma_period,
                             'ma_value': ma_value,
                             'prev_close': prev_close,
+                            'ma_condition': ma_condition,
                             'type': 'individual'
                         })
                     else:
                         self.logger.info(f"{stock_name}({stock_code}) - 추가 매수 수량이 0 또는 음수")
                 else:
                     if ma_value:
-                        self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 미충족: 골든크로스 미발생")
+                        miss_msg = f"{stock_name}({stock_code}) - 매수 조건 미충족"
+                        if ma_condition == "종가":
+                            miss_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}일선({ma_value:,.0f}원)을 상향돌파하지 않음"
+                        else:
+                            miss_msg += f": {ma_condition}일선이 {ma_period}일선을 골든크로스하지 않음"
+                        self.logger.info(miss_msg)
                     else:
                         self.logger.info(f"{stock_name}({stock_code}) - 이동평균 계산 실패")
             
@@ -765,11 +835,18 @@ class KRTrader(BaseTrader):
                 current_price = float(price_data['output']['stck_prpr'])
                 prev_close = float(price_data['output']['stck_sdpr'])
                 
-                # 매수 조건 체크 (전일 종가가 이동평균선 위에 있는지)
-                is_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close)
+                # 매수 조건 체크 (POOL 종목은 주간 데이터 사용)
+                ma_period = int(row['매수기준'])
+                ma_condition = row.get('매수조건', '종가')  # 기본값은 '종가'
+                is_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, "W")
                 
                 if is_buy:
-                    self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 충족: 5일선이 {ma_period}일선을 상향돌파")
+                    buy_msg = f"{stock_name}({stock_code}) - 매수 조건 충족"
+                    if ma_condition == "종가":
+                        buy_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}주선({ma_value:,.0f}원)을 상향돌파"
+                    else:
+                        buy_msg += f": {ma_condition}주선이 {ma_period}주선을 골든크로스"
+                    self.logger.info(buy_msg)
                     
                     # 매수 금액 계산 (현금 * 배분비율)
                     buy_amount = cash * allocation_ratio
@@ -788,13 +865,19 @@ class KRTrader(BaseTrader):
                             'ma_period': ma_period,
                             'ma_value': ma_value,
                             'prev_close': prev_close,
+                            'ma_condition': ma_condition,
                             'type': 'pool'
                         })
                     else:
                         self.logger.info(f"{stock_name}({stock_code}) - 추가 매수 수량이 0 또는 음수")
                 else:
                     if ma_value:
-                        self.logger.info(f"{stock_name}({stock_code}) - 매수 조건 미충족: 골든크로스 미발생")
+                        miss_msg = f"{stock_name}({stock_code}) - 매수 조건 미충족"
+                        if ma_condition == "종가":
+                            miss_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}주선({ma_value:,.0f}원)을 상향돌파하지 않음"
+                        else:
+                            miss_msg += f": {ma_condition}주선이 {ma_period}주선을 골든크로스하지 않음"
+                        self.logger.info(miss_msg)
                     else:
                         self.logger.info(f"{stock_name}({stock_code}) - 이동평균 계산 실패")
             
@@ -927,6 +1010,21 @@ class KRTrader(BaseTrader):
                     self.logger.info(f"{stock_name}({stock_code}) - 매수 주문 성공: 주문번호 {order_result['output']['ODNO']}")
                     
                     # 거래 내역 저장
+                    if candidate['type'] == 'individual':
+                        period_unit = "일선"
+                        period_div_code = "D"
+                    else:
+                        period_unit = "주선"
+                        period_div_code = "W"
+                    
+                    ma_condition = candidate.get('ma_condition', '종가')
+                    
+                    reason = ""
+                    if ma_condition == "종가":
+                        reason = f"{ma_period}{period_unit} 매수 조건 충족 (전일 종가 {prev_close:,.0f}원 > MA {ma_value:,.0f}원)"
+                    else:
+                        reason = f"{ma_condition}{period_unit}과 {ma_period}{period_unit}의 골든크로스 발생"
+                    
                     trade_data = {
                         "trade_type": "BUY",
                         "trade_action": "BUY",
@@ -937,13 +1035,14 @@ class KRTrader(BaseTrader):
                         "total_amount": quantity * price,
                         "ma_period": ma_period,
                         "ma_value": ma_value,
-                        "reason": f"{ma_period}일선 매수 조건 충족 (현재가 {price:,.0f}원 > MA {ma_value:,.0f}원)"
+                        "reason": reason,
+                        "order_type": "BUY"
                     }
                     self.trade_history.add_trade(trade_data)
                     
                     # 매수 상세 정보 로깅
                     msg = f"매수 주문 실행: {stock_name}({stock_code}) {quantity}주"
-                    msg += f"\n- 매수 사유: 이동평균 상향돌파 (전일종가: {prev_close:,.0f}원 > {ma_period}일선: {ma_value:,.0f}원)"
+                    msg += f"\n- 매수 사유: {reason}"
                     msg += f"\n- 매수 금액: {quantity * price:,.0f}원"
                     msg += f"\n- 배분 비율: {candidate['allocation_ratio']*100:.1f}%"
                     self.logger.info(msg)
@@ -982,28 +1081,39 @@ class KRTrader(BaseTrader):
             # 보유 종목 매도 조건 체크
             sell_candidates = []
             
+            # 각 종목별로 매도 조건 체크
             for holding in balance['output1']:
+                # 보유량이 0이면 스킵
+                if int(holding.get('hldg_qty', 0)) <= 0:
+                    continue
+                
                 stock_code = holding['pdno']
                 stock_name = holding['prdt_name']
                 quantity = int(holding['hldg_qty'])
-                current_price = float(holding['prpr'])
                 
-                if quantity <= 0:
-                    continue
+                # 종목이 개별 종목인지 POOL 종목인지 확인
+                is_individual = False
+                ma_period = 20  # 기본값
+                ma_condition = "종가"  # 기본값
+                period_div_code = "D"  # 기본값
                 
-                # 개별 종목 또는 POOL 종목 확인
-                is_individual = stock_code in self.individual_stocks['종목코드'].values
-                is_pool = stock_code in self.pool_stocks['종목코드'].values
-                
-                if not (is_individual or is_pool):
-                    self.logger.info(f"{stock_name}({stock_code}) - 매매 대상 아님")
-                    continue
-                
-                # 매매 기준 확인
-                if is_individual:
-                    ma_period = int(self.individual_stocks[self.individual_stocks['종목코드'] == stock_code]['매매기준'].values[0])
+                # 개별 종목에서 찾기
+                individual_match = self.individual_stocks[self.individual_stocks['종목코드'] == stock_code]
+                if not individual_match.empty:
+                    is_individual = True
+                    ma_period = int(individual_match.iloc[0]['매도기준'])
+                    ma_condition = individual_match.iloc[0].get('매도조건', '종가')
+                    period_div_code = "D"  # 개별 종목은 일봉 데이터 사용
                 else:
-                    ma_period = int(self.pool_stocks[self.pool_stocks['종목코드'] == stock_code]['매매기준'].values[0])
+                    # POOL 종목에서 찾기
+                    pool_match = self.pool_stocks[self.pool_stocks['종목코드'] == stock_code]
+                    if not pool_match.empty:
+                        ma_period = int(pool_match.iloc[0]['매도기준'])
+                        ma_condition = pool_match.iloc[0].get('매도조건', '종가')
+                        period_div_code = "W"  # POOL 종목은 주봉 데이터 사용
+                    else:
+                        # 기준을 찾을 수 없는 경우 (기본값 사용)
+                        self.logger.warning(f"{stock_name}({stock_code}) - 매도 기준을 찾을 수 없어 기본값 사용: {ma_period}일선, 전일 종가")
                 
                 # 현재가 조회
                 price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
@@ -1014,11 +1124,22 @@ class KRTrader(BaseTrader):
                 current_price = float(price_data['output']['stck_prpr'])
                 prev_close = float(price_data['output']['stck_sdpr'])
                 
-                # 매도 조건 체크 (전일 종가가 이동평균선 아래에 있는지)
-                is_sell, ma_value = self.check_sell_condition(stock_code, ma_period, prev_close)
+                # 매도 조건 체크
+                is_sell, ma_value = self.check_sell_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
                 
                 if is_sell:
-                    self.logger.info(f"{stock_name}({stock_code}) - 매도 조건 충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
+                    sell_msg = f"{stock_name}({stock_code}) - 매도 조건 충족"
+                    if period_div_code == "D":
+                        period_unit = "일선"
+                    else:
+                        period_unit = "주선"
+                        
+                    if ma_condition == "종가":
+                        sell_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}{period_unit}({ma_value:,.0f}원) 아래로 하향돌파"
+                    else:
+                        sell_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 데드크로스"
+                    
+                    self.logger.info(sell_msg)
                     
                     sell_candidates.append({
                         'code': stock_code,
@@ -1027,11 +1148,24 @@ class KRTrader(BaseTrader):
                         'price': current_price,
                         'ma_period': ma_period,
                         'ma_value': ma_value,
-                        'prev_close': prev_close
+                        'prev_close': prev_close,
+                        'ma_condition': ma_condition,
+                        'period_div_code': period_div_code
                     })
                 else:
                     if ma_value:
-                        self.logger.info(f"{stock_name}({stock_code}) - 매도 조건 미충족 (전일종가: {prev_close:,.0f}, {ma_period}일선: {ma_value:,.0f})")
+                        if period_div_code == "D":
+                            period_unit = "일선"
+                        else:
+                            period_unit = "주선"
+                            
+                        miss_msg = f"{stock_name}({stock_code}) - 매도 조건 미충족"
+                        if ma_condition == "종가":
+                            miss_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}{period_unit}({ma_value:,.0f}원) 아래로 하향돌파하지 않음"
+                        else:
+                            miss_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 데드크로스하지 않음"
+                        
+                        self.logger.info(miss_msg)
                     else:
                         self.logger.info(f"{stock_name}({stock_code}) - 이동평균 계산 실패")
             
@@ -1051,6 +1185,8 @@ class KRTrader(BaseTrader):
                 ma_period = candidate['ma_period']
                 ma_value = candidate['ma_value']
                 prev_close = candidate['prev_close']
+                ma_condition = candidate['ma_condition']
+                period_div_code = candidate['period_div_code']
                 
                 # 매도 주문 실행
                 self.logger.info(f"{stock_name}({stock_code}) - 매도 주문: {quantity}주 @ {price:,.0f}원")
@@ -1066,6 +1202,17 @@ class KRTrader(BaseTrader):
                     self.logger.info(f"{stock_name}({stock_code}) - 매도 주문 성공: 주문번호 {order_result['output']['ODNO']}")
                     
                     # 거래 내역 저장
+                    if period_div_code == "D":
+                        period_unit = "일선"
+                    else:
+                        period_unit = "주선"
+                        
+                    reason = ""
+                    if ma_condition == "종가":
+                        reason = f"{ma_period}{period_unit} 매도 조건 충족 (전일 종가 {prev_close:,.0f}원 < MA {ma_value:,.0f}원)"
+                    else:
+                        reason = f"{ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생"
+                    
                     trade_data = {
                         "trade_type": "SELL",
                         "trade_action": "SELL",
@@ -1076,9 +1223,8 @@ class KRTrader(BaseTrader):
                         "total_amount": quantity * price,
                         "ma_period": ma_period,
                         "ma_value": ma_value,
-                        "reason": f"{ma_period}일선 매도 조건 충족 (현재가 {price:,.0f}원 < MA {ma_value:,.0f}원)",
-                        "profit_loss": (price - prev_close) * quantity,
-                        "profit_loss_pct": (price - prev_close) / prev_close * 100
+                        "reason": reason,
+                        "order_type": "SELL"
                     }
                     self.trade_history.add_trade(trade_data)
                     
@@ -1096,7 +1242,7 @@ class KRTrader(BaseTrader):
         except Exception as e:
             self.logger.error(f"매도 주문 실행 중 오류 발생: {str(e)}")
             raise
-
+    
     def _check_stop_conditions(self) -> None:
         """스탑로스 및 트레일링 스탑 조건을 확인합니다."""
         try:

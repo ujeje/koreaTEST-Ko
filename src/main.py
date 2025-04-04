@@ -51,13 +51,11 @@ def print_trading_settings(logger, market: str, trader) -> None:
     
     logger.info("\n=== 매수 타이밍 ===")
     if market == "KOR":
-        # 한국 시장은 매수/매도 시간 출력
-        logger.info(f"매수 시간: {trader.settings['buy_time']}")
-        logger.info(f"매도 시간: {trader.settings['sell_time']}")
+        # 한국 시장은 장 시작 시간 출력
+        logger.info(f"장 시작 시간: {trader.config['trading']['kor_market_start'][:2]}:{trader.config['trading']['kor_market_start'][2:]}")
     else:
-        # 미국 시장은 시가/종가 매수 비율 출력
-        logger.info(f"시가 매수 비율: {trader.settings['market_open_ratio']*100}%")
-        logger.info(f"종가 매수 비율: {trader.settings['market_close_ratio']*100}%")
+        # 미국 시장도 장 시작 시간 출력
+        logger.info(f"장 시작 시간: {trader.config['trading']['us_market_start'][:2]}:{trader.config['trading']['us_market_start'][2:]}")
     
     logger.info("\n=== 스탑로스/트레일링 스탑 설정 ===")
     logger.info(f"스탑로스: {trader.settings['stop_loss']}%")
