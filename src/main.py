@@ -9,20 +9,38 @@ from src.overseas.us_trader import USTrader
 from src.utils.logger import setup_logger
 from src.utils.google_sheet_manager import GoogleSheetManager
 
-def is_korean_market_time() -> bool:
+def is_korean_market_time(kr_trader = None) -> bool:
     """한국 시장 운영 시간인지 확인합니다."""
+    # KRTrader 객체가 전달된 경우, 휴장일 체크를 포함한 시장 상태 확인 (API 활용)
+    if kr_trader:
+        return kr_trader.check_market_condition()
+    
+    # KRTrader 객체가 없는 경우, 간단히 시간과 요일만 체크 (config 설정값 활용)
+    # 이 경우에는 휴장일 정보는 확인하지 않음
     now = datetime.now()
     current_time = now.strftime("%H%M")
     
     # 주말 체크
     if now.weekday() >= 5:  # 5: 토요일, 6: 일요일
         return False
-        
-    # 장 운영 시간 체크 (09:00 ~ 15:30)
-    return "0900" <= current_time <= "1530"
+    
+    # 장 운영 시간 체크 - config에 정의된 시간 사용
+    with open('config/config.yaml', 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+    
+    kor_market_start = config['trading']['kor_market_start']
+    kor_market_end = config['trading']['kor_market_end']
+    
+    return kor_market_start <= current_time <= kor_market_end
 
-def is_us_market_time() -> bool:
+def is_us_market_time(us_trader = None) -> bool:
     """미국 시장 운영 시간인지 확인합니다."""
+    # USTrader 객체가 전달된 경우, 휴장일 체크를 포함한 시장 상태 확인 (API 활용)
+    if us_trader:
+        return us_trader.check_market_condition()
+    
+    # USTrader 객체가 없는 경우, 간단히 시간과 요일만 체크 (config 설정값 활용)
+    # 이 경우에는 휴장일 정보는 확인하지 않음
     us_tz = pytz.timezone('America/New_York')
     now = datetime.now(us_tz)
     current_time = now.strftime("%H%M")
@@ -30,9 +48,15 @@ def is_us_market_time() -> bool:
     # 주말 체크
     if now.weekday() >= 5:  # 5: 토요일, 6: 일요일
         return False
-        
-    # 장 운영 시간 체크 (미국 현지 시간 기준 09:30 ~ 16:00)
-    return "0930" <= current_time <= "1600"
+    
+    # 장 운영 시간 체크 - config에 정의된 시간 사용
+    with open('config/config.yaml', 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+    
+    usa_market_start = config['trading']['usa_market_start']
+    usa_market_end = config['trading']['usa_market_end']
+    
+    return usa_market_start <= current_time <= usa_market_end
 
 def print_trading_settings(logger, market: str, trader) -> None:
     """트레이딩 설정을 출력합니다."""
@@ -101,8 +125,8 @@ def main():
         while True:
             try:
                 # 현재 운영 중인 시장 확인
-                is_kor_time = is_korean_market_time()
-                is_us_time = is_us_market_time()
+                is_kor_time = is_korean_market_time(traders.get('KOR')) if 'KOR' in traders else False
+                is_us_time = is_us_market_time(traders.get('USA')) if 'USA' in traders else False
                 
                 # 현재 활성화된 시장 설정
                 current_active_markets = set()

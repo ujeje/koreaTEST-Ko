@@ -92,23 +92,28 @@ class USTrader(BaseTrader):
     def check_market_condition(self) -> bool:
         """현재 시장 상태를 확인합니다."""
         current_time = datetime.now(self.us_timezone)
+        current_date = current_time.strftime('%Y-%m-%d')
+        current_time_str = current_time.strftime('%H%M')
         
-        # exchange_calendars 라이브러리를 사용하여 휴장일 확인
+        # exchange_calendars 라이브러리를 사용하여 휴장일 확인 (API 기반 확인)
         try:
             # XNYS: 뉴욕 증권거래소 (NYSE) 캘린더 사용
             nyse_calendar = xcals.get_calendar("XNYS")
-            current_date = current_time.strftime('%Y-%m-%d')
             
-            # 오늘이 거래일인지 확인
-            if not nyse_calendar.is_session(current_date):
+            # 오늘이 거래일인지 확인 (API 기반)
+            is_session = nyse_calendar.is_session(current_date)
+            if not is_session:
                 self.logger.info(f"오늘({current_date})은 미국 증시 휴장일입니다.")
                 return False
+            else:
+                self.logger.info(f"오늘({current_date})은 미국 증시 개장일입니다.")
             
-            # 장 시작 시간과 종료 시간 체크
-            current_time_str = current_time.strftime('%H%M')
+            # 장 시작 시간과 종료 시간 체크 (config 설정값 사용)
             if not (self.config['trading']['usa_market_start'] <= current_time_str <= self.config['trading']['usa_market_end']):
-                self.logger.info("현재 미국 장 운영 시간이 아닙니다.")
+                self.logger.info(f"현재 미국 장 운영 시간이 아닙니다. (현재시간: {current_time_str}, 장 운영시간: {self.config['trading']['usa_market_start']}~{self.config['trading']['usa_market_end']})")
                 return False
+            else:
+                self.logger.info(f"현재 미국 장 운영 시간입니다. (현재시간: {current_time_str}, 장 운영시간: {self.config['trading']['usa_market_start']}~{self.config['trading']['usa_market_end']})")
                 
             return True
             
@@ -121,10 +126,9 @@ class USTrader(BaseTrader):
                 self.logger.info("주말은 거래가 불가능합니다.")
                 return False
                 
-            # 장 시작 시간과 종료 시간 체크
-            current_time_str = current_time.strftime('%H%M')
+            # 장 시작 시간과 종료 시간 체크 (config 설정값 사용)
             if not (self.config['trading']['usa_market_start'] <= current_time_str <= self.config['trading']['usa_market_end']):
-                self.logger.info("현재 미국 장 운영 시간이 아닙니다.")
+                self.logger.info(f"현재 미국 장 운영 시간이 아닙니다. (현재시간: {current_time_str}, 장 운영시간: {self.config['trading']['usa_market_start']}~{self.config['trading']['usa_market_end']})")
                 return False
                 
             return True
@@ -776,17 +780,17 @@ class USTrader(BaseTrader):
                 ma_period = 0
                 for _, row in self.individual_stocks.iterrows():
                     if row['종목코드'] == holding['ovrs_pdno']:
-                        ma_period = int(row['매매기준'])
+                        ma_period = int(row['매도기준'])
                         break
                 
                 if ma_period == 0:
                     for _, row in self.pool_stocks.iterrows():
                         if row['종목코드'] == holding['ovrs_pdno']:
-                            ma_period = int(row['매매기준'])
+                            ma_period = int(row['매도도기준'])
                             break
                 
                 if ma_period == 0:
-                    self.logger.warning(f"{stock_name}({stock_code})의 매매기준을 찾을 수 없습니다.")
+                    self.logger.warning(f"{stock_name}({stock_code})의 매도기준을 찾을 수 없습니다.")
                     continue
                 
                 # 현재가 조회

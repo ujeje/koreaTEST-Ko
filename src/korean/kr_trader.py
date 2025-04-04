@@ -32,6 +32,10 @@ class KRTrader(BaseTrader):
         # 최고가 캐시 관련 변수 추가
         self.highest_price_cache = {}  # 종목별 최고가 캐시
         self.highest_price_cache_date = None  # 최고가 캐시 갱신 날짜
+        
+        # 휴장일 캐시 관련 변수 추가
+        self.holiday_cache = {}  # 날짜별 휴장일 캐시
+        self.holiday_cache_date = None  # 휴장일 캐시 갱신 날짜
     
     def _wait_for_api_call(self):
         """API 호출 간격을 제어합니다."""
@@ -83,11 +87,55 @@ class KRTrader(BaseTrader):
     
     def check_market_condition(self) -> bool:
         """한국 시장 상태를 체크합니다."""
-        now = datetime.now()
+        now = datetime.now(self.kr_timezone)
+        current_date = now.strftime("%Y%m%d")
         current_time = now.strftime("%H%M")
         
-        # 장 운영 시간 체크 (09:00 ~ 15:30)
-        return self.config['trading']['kor_market_start'] <= current_time <= self.config['trading']['kor_market_end']
+        # 주말 체크
+        if now.weekday() >= 5:  # 5: 토요일, 6: 일요일
+            self.logger.info("주말은 거래일이 아닙니다.")
+            return False
+        
+        # 장 운영 시간 체크 - config 설정값 사용
+        if not (self.config['trading']['kor_market_start'] <= current_time <= self.config['trading']['kor_market_end']):
+            self.logger.info(f"현재 장 운영 시간이 아닙니다. (현재시간: {current_time}, 장 운영시간: {self.config['trading']['kor_market_start']}~{self.config['trading']['kor_market_end']})")
+            return False
+        
+        # 모의투자일 경우 휴장일 체크 없이 주말 아니면 개장일로 간주
+        if self.is_paper_trading:
+            self.logger.info(f"모의투자 모드: 휴장일 체크 생략. 주말이 아니므로 개장일로 간주합니다.")
+            self.logger.info(f"오늘({current_date})은 개장일입니다. 장 운영 시간: {self.config['trading']['kor_market_start']}~{self.config['trading']['kor_market_end']}")
+            return True
+        
+        # 실전투자일 경우에만 휴장일 API를 사용하여 확인
+        # 휴장일 정보는 API를 통해 확인
+        # 휴장일 캐시가 오늘 날짜의 것인지 확인
+        if self.holiday_cache_date != current_date:
+            # 오늘 날짜의 휴장일 정보가 캐시에 없으면 API 호출
+            self.logger.info(f"{current_date} 휴장일 정보를 API를 통해 조회합니다.")
+            holiday_info = self.kr_api.check_holiday(current_date)
+            if holiday_info:
+                self.holiday_cache[current_date] = holiday_info
+                self.holiday_cache_date = current_date
+                self.logger.info(f"휴장일 정보 캐시 업데이트 완료: {holiday_info}")
+            else:
+                self.logger.error("휴장일 정보를 가져오는데 실패했습니다.")
+                return False
+        else:
+            # 캐시에서 정보 가져오기
+            holiday_info = self.holiday_cache.get(current_date)
+            if not holiday_info:
+                self.logger.error("캐시된 휴장일 정보가 없습니다.")
+                return False
+        
+        # 개장일 여부 확인 (opnd_yn: 'Y'인 경우 개장일)
+        is_open = holiday_info.get('opnd_yn') == 'Y'
+        if not is_open:
+            self.logger.info(f"오늘({current_date})은 개장일이 아닙니다. (휴장)")
+        else:
+            self.logger.info(f"오늘({current_date})은 개장일입니다. 장 운영 시간: {self.config['trading']['kor_market_start']}~{self.config['trading']['kor_market_end']}")
+        
+        return is_open
     
     def calculate_ma(self, stock_code: str, period: int = 20, period_div_code: str = "D") -> Optional[tuple]:
         """이동평균을 계산합니다.
@@ -792,7 +840,7 @@ class KRTrader(BaseTrader):
             for _, row in self.pool_stocks.iterrows():
                 stock_code = row['종목코드']
                 stock_name = row['종목명']
-                ma_period = int(row['매매기준'])
+                ma_period = int(row['매수기준'])
                 allocation_ratio = float(row['배분비율']) / 100
                 
                 # 이미 보유 중인 종목은 스킵

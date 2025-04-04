@@ -72,21 +72,7 @@ class GoogleSheetManager:
                 f"{settings_sheet}!{self.coordinates['settings']['rebalancing_date']}",
                 f"{settings_sheet}!{self.coordinates['settings']['rebalancing_ratio']}",
             ]
-            
-            # 시장 유형에 따라 다른 설정 추가
-            if market_type == "KOR":
-                # 국내 시장: 매수시간, 매도시간
-                ranges.extend([
-                    f"{settings_sheet}!{self.coordinates['settings']['buy_time']}",
-                    f"{settings_sheet}!{self.coordinates['settings']['sell_time']}"
-                ])
-            else:
-                # 미국 시장: 시가 매수 비율, 종가 매수 비율
-                ranges.extend([
-                    f"{settings_sheet}!{self.coordinates['settings']['market_open_ratio']}",
-                    f"{settings_sheet}!{self.coordinates['settings']['market_close_ratio']}"
-                ])
-            
+
             # 설정값 조회
             result = self.service.spreadsheets().values().batchGet(
                 spreadsheetId=self.spreadsheet_id,
@@ -105,21 +91,7 @@ class GoogleSheetManager:
                 'rebalancing_date': value_ranges[5]['values'][0][0] if value_ranges[5].get('values') else "",
                 'rebalancing_ratio': float(value_ranges[6]['values'][0][0]) / 100 if value_ranges[6].get('values') else 1,
             }
-            
-            # 시장 유형에 따라 다른 설정 추가
-            if market_type == "KOR":
-                # 국내 시장: 매수시간, 매도시간
-                settings.update({
-                    'buy_time': value_ranges[7]['values'][0][0] if value_ranges[7].get('values') else "0900",
-                    'sell_time': value_ranges[8]['values'][0][0] if value_ranges[8].get('values') else "1500"
-                })
-            else:
-                # 미국 시장: 시가 매수 비율, 종가 매수 비율
-                settings.update({
-                    'market_open_ratio': float(value_ranges[7]['values'][0][0]) / 100 if value_ranges[7].get('values') else 0.7,
-                    'market_close_ratio': float(value_ranges[8]['values'][0][0]) / 100 if value_ranges[8].get('values') else 0.3
-                })
-            
+
             return settings
             
         except Exception as e:
@@ -134,18 +106,7 @@ class GoogleSheetManager:
                 'rebalancing_date': "",
                 'rebalancing_ratio': 1,
             }
-            
-            if market_type == "KOR":
-                default_settings.update({
-                    'buy_time': "0900",
-                    'sell_time': "1500"
-                })
-            else:
-                default_settings.update({
-                    'market_open_ratio': 0.7,
-                    'market_close_ratio': 0.3
-                })
-            
+
             return default_settings
     
     def _parse_date(self, date_str) -> str:

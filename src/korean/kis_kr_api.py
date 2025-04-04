@@ -476,4 +476,63 @@ class KISKRAPIManager:
             
         except Exception as e:
             logging.error(f"주가 조회 중 오류 발생: {str(e)}")
+            return None
+
+    def check_holiday(self, base_date: str = None) -> Optional[Dict]:
+        """국내 휴장일 여부를 조회합니다.
+        
+        Args:
+            base_date (str, optional): 기준일자 (YYYYMMDD). 기본값은 오늘 날짜.
+            
+        Returns:
+            Optional[Dict]: 휴장일 정보를 담은 딕셔너리
+                - bass_dt: 기준일자
+                - wday_dvsn_cd: 요일구분코드 (01:일요일, 02:월요일, 03:화요일, 04:수요일, 05:목요일, 06:금요일, 07:토요일)
+                - bzdy_yn: 영업일여부 (Y/N)
+                - tr_day_yn: 거래일여부 (Y/N)
+                - opnd_yn: 개장일여부 (Y/N)
+                - sttl_day_yn: 결제일여부 (Y/N)
+        """
+        try:
+            # 기준일자가 없으면 오늘 날짜 사용
+            if base_date is None:
+                base_date = datetime.now().strftime("%Y%m%d")
+                
+            access_token = self._check_token()
+            
+            url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/chk-holiday"
+            headers = {
+                "Content-Type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {access_token}",
+                "appkey": self.api_key,
+                "appsecret": self.api_secret,
+                "tr_id": "CTCA0903R",  # 국내휴장일조회 TR
+                "custtype": "P"  # P: 개인, B: 법인
+            }
+            
+            params = {
+                "BASS_DT": base_date,   # 기준일자(YYYYMMDD)
+                "CTX_AREA_NK": "",      # 연속조회키
+                "CTX_AREA_FK": ""       # 연속조회검색조건
+            }
+            
+            self.logger.info(f"국내 휴장일 조회: {base_date}")
+            
+            # API 호출 후 대기
+            response = requests.get(url, headers=headers, params=params)
+            time.sleep(0.5 if self.is_paper_trading else 0.3)  # 모의투자: 0.5초, 실전투자: 0.3초
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data['rt_cd'] == '0' and 'output' in data:  # 정상 응답 확인
+                    return data['output']  # 휴장일 정보 반환
+                else:
+                    error_msg = data.get('msg1', '알 수 없는 오류가 발생했습니다.')
+                    self.logger.error(f"휴장일 조회 실패: {error_msg}")
+            else:
+                self.logger.error(f"휴장일 조회 실패: {response.text}")
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"휴장일 조회 중 오류 발생: {str(e)}")
             return None 
