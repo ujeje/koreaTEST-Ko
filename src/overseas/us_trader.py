@@ -42,6 +42,10 @@ class USTrader(BaseTrader):
         self.sold_stocks_cache = set()
         self.sold_stocks_cache_time = 0
         
+        # 장 시작 메시지 표시 여부
+        self.market_open_executed = False
+        self.last_market_date = None
+        
         self.logger.info(f"미국 시장 시간 설정: {self.config['trading']['usa_market_start']} ~ {self.config['trading']['usa_market_end']}")
     
     def _wait_for_api_call(self):
@@ -95,6 +99,11 @@ class USTrader(BaseTrader):
         current_date = current_time.strftime('%Y-%m-%d')
         current_time_str = current_time.strftime('%H%M')
         
+        # 날짜가 변경되었으면 market_open_executed 초기화
+        if self.last_market_date != current_date:
+            self.market_open_executed = False
+            self.last_market_date = current_date
+        
         # exchange_calendars 라이브러리를 사용하여 휴장일 확인 (API 기반 확인)
         try:
             # XNYS: 뉴욕 증권거래소 (NYSE) 캘린더 사용
@@ -106,14 +115,20 @@ class USTrader(BaseTrader):
                 self.logger.info(f"오늘({current_date})은 미국 증시 휴장일입니다.")
                 return False
             else:
-                self.logger.info(f"오늘({current_date})은 미국 증시 개장일입니다.")
+                if not self.market_open_executed:
+                    self.logger.info(f"오늘({current_date})은 미국 증시 개장일입니다.")
             
             # 장 시작 시간과 종료 시간 체크 (config 설정값 사용)
             if not (self.config['trading']['usa_market_start'] <= current_time_str <= self.config['trading']['usa_market_end']):
                 self.logger.info(f"현재 미국 장 운영 시간이 아닙니다. (현재시간: {current_time_str}, 장 운영시간: {self.config['trading']['usa_market_start']}~{self.config['trading']['usa_market_end']})")
+                # 장 시간이 지나면 다음날을 위해 초기화
+                if current_time_str > self.config['trading']['usa_market_end']:
+                    self.market_open_executed = False
                 return False
             else:
-                self.logger.info(f"현재 미국 장 운영 시간입니다. (현재시간: {current_time_str}, 장 운영시간: {self.config['trading']['usa_market_start']}~{self.config['trading']['usa_market_end']})")
+                if not self.market_open_executed:
+                    self.logger.info(f"현재 미국 장 운영 시간입니다. (현재시간: {current_time_str}, 장 운영시간: {self.config['trading']['usa_market_start']}~{self.config['trading']['usa_market_end']})")
+                    self.market_open_executed = True
                 
             return True
             
@@ -129,7 +144,14 @@ class USTrader(BaseTrader):
             # 장 시작 시간과 종료 시간 체크 (config 설정값 사용)
             if not (self.config['trading']['usa_market_start'] <= current_time_str <= self.config['trading']['usa_market_end']):
                 self.logger.info(f"현재 미국 장 운영 시간이 아닙니다. (현재시간: {current_time_str}, 장 운영시간: {self.config['trading']['usa_market_start']}~{self.config['trading']['usa_market_end']})")
+                # 장 시간이 지나면 다음날을 위해 초기화
+                if current_time_str > self.config['trading']['usa_market_end']:
+                    self.market_open_executed = False
                 return False
+            else:
+                if not self.market_open_executed:
+                    self.logger.info(f"현재 미국 장 운영 시간입니다. (현재시간: {current_time_str}, 장 운영시간: {self.config['trading']['usa_market_start']}~{self.config['trading']['usa_market_end']})")
+                    self.market_open_executed = True
                 
             return True
     
@@ -581,12 +603,6 @@ class USTrader(BaseTrader):
             # 총자산금액을 환율로 나누어 달러로 환산
             total_assets = float(total_balance['output3']['tot_asst_amt']) / float(usd_balance['frst_bltn_exrt'])
             
-            # 구글 시트에서 리밸런싱 비율 가져오기
-            rebalancing_ratio = float(self.settings.get('rebalancing_ratio', 0))
-            if not rebalancing_ratio:
-                self.logger.error("리밸런싱 비율이 설정되지 않았습니다.")
-                return
-            
             # 보유 종목별 현재 비율 계산
             holdings = {}
             for holding in balance['output1']:
@@ -617,16 +633,13 @@ class USTrader(BaseTrader):
                             target_ratio = float(stock_info['배분비율'])
                     
                     if stock_info is not None:
-                        # 리밸런싱 비율 적용 (rebalancing_ratio가 1일 때 100%를 의미)
-                        # 배분비율과 리밸런싱 비율을 곱하여 최종 목표 비율 계산
-                        adjusted_target_ratio = target_ratio * rebalancing_ratio
                         holdings[full_stock_code] = {
                             'name': stock_info['종목명'],
                             'current_price': current_price,
                             'quantity': quantity,
                             'current_value': current_value,
                             'current_ratio': current_ratio,
-                            'target_ratio': adjusted_target_ratio
+                            'target_ratio': target_ratio
                         }
             
             # 리밸런싱 실행
@@ -666,7 +679,7 @@ class USTrader(BaseTrader):
                                 "quantity": quantity_diff,
                                 "price": info['current_price'],
                                 "total_amount": abs(value_diff),
-                                "reason": f"리밸런싱 매수 (현재 비중 {info['current_ratio']:.1f}% → 목표 비중 {info['target_ratio']:.1f}%)",
+                                "reason": f"리밸런싱 매수 (현재 비중 {info['current_ratio']:.1f}% → 목표 비중: {info['target_ratio']:.1f}%)",
                                 "order_type": "BUY"
                             }
                             self.trade_history.add_trade(trade_data)
@@ -698,7 +711,7 @@ class USTrader(BaseTrader):
                                 "quantity": abs(quantity_diff),
                                 "price": info['current_price'],
                                 "total_amount": abs(value_diff),
-                                "reason": f"리밸런싱 매도 (현재 비중 {info['current_ratio']:.1f}% → 목표 비중 {info['target_ratio']:.1f}%)",
+                                "reason": f"리밸런싱 매도 (현재 비중 {info['current_ratio']:.1f}% → 목표 비중: {info['target_ratio']:.1f}%)",
                                 "profit_loss": (info['current_price'] - info['current_price']) * abs(quantity_diff),
                                 "profit_loss_pct": 0.0
                             }
@@ -721,7 +734,7 @@ class USTrader(BaseTrader):
             # 당일 최초 실행 여부 확인 및 초기화
             if self.execution_date != now.strftime("%Y-%m-%d"):
                 self.execution_date = now.strftime("%Y-%m-%d")
-                self.market_open_executed = False
+                # market_open_executed는 check_market_condition에서 관리하므로 여기서는 설정하지 않음
                 self.sold_stocks_cache = []  # 당일 매도 종목 캐시 초기화
                 self.sold_stocks_cache_time = 0  # 캐시 시간 초기화
                 self.logger.info(f"=== {self.execution_date} 매매 시작 ===")
@@ -764,6 +777,15 @@ class USTrader(BaseTrader):
     def _process_sell_conditions(self, balance: Dict):
         """매도 조건 처리"""
         try:
+            # 구글 스프레드시트에 있는 종목 코드 리스트 생성
+            sheet_stock_codes = set()
+            # 개별 종목에서 종목 코드 추가
+            for _, row in self.individual_stocks.iterrows():
+                sheet_stock_codes.add(row['종목코드'])
+            # POOL 종목에서 종목 코드 추가
+            for _, row in self.pool_stocks.iterrows():
+                sheet_stock_codes.add(row['종목코드'])
+            
             # 보유 종목 확인
             for holding in balance['output1']:
                 # 거래 가능 수량이 있는 경우만 처리
@@ -773,20 +795,86 @@ class USTrader(BaseTrader):
                     
                 # 거래소와 종목코드 결합
                 exchange = holding.get('ovrs_excg_cd', '')  # NASD, NYSE, AMEX
-                stock_code = f"{holding['ovrs_pdno']}.{exchange}"       # ????
+                stock_code_only = holding['ovrs_pdno']
+                stock_code = f"{stock_code_only}.{exchange}"
                 stock_name = holding['ovrs_item_name']
+                
+                # 구글 스프레드시트에서 삭제된 종목 체크
+                if stock_code_only not in sheet_stock_codes:
+                    # 현재가 조회
+                    current_price_data = self._retry_api_call(self.us_api.get_stock_price, stock_code)
+                    if current_price_data is None:
+                        self.logger.warning(f"{stock_name}({stock_code})의 현재가를 조회할 수 없습니다.")
+                        continue
+                        
+                    current_price = float(current_price_data['output']['last'])
+                    
+                    self.logger.info(f"{stock_name}({stock_code}) - 구글 스프레드시트에서 삭제된 종목이므로 매도합니다.")
+                    
+                    # 매도 시 지정가의 1% 낮게 설정하여 시장가처럼 거래
+                    sell_price = current_price * 0.99
+                    
+                    # 매도 주문 실행
+                    result = self._retry_api_call(self.us_api.order_stock, stock_code, "SELL", quantity, sell_price)
+                    
+                    if result:
+                        # 매수 평균가 가져오기
+                        avg_price = float(holding.get('pchs_avg_pric', 0))
+                        if avg_price <= 0:
+                            avg_price = current_price  # 매수 평균가가 없으면 현재가 사용
+                        
+                        msg = f"매도 주문 실행: {stock_name} {quantity}주 (지정가)"
+                        msg += f"\n- 매도 사유: 구글 스프레드시트에서 종목이 삭제됨"
+                        msg += f"\n- 매도 금액: ${current_price * quantity:,.2f} (현재가 ${current_price:.2f})"
+                        msg += f"\n- 매수 정보: 매수단가 ${avg_price:.2f} / 평가손익 ${(current_price - avg_price) * quantity:,.2f}"
+                        msg += f"\n- 매도 수익률: {((current_price - avg_price) / avg_price * 100):.2f}% (매수가 ${avg_price:,.2f})"
+                        self.logger.info(msg)
+                        
+                        # 거래 내역 저장
+                        trade_data = {
+                            "trade_type": "SELL",
+                            "trade_action": "SELL",
+                            "stock_code": stock_code,
+                            "stock_name": stock_name,
+                            "quantity": quantity,
+                            "price": current_price,
+                            "total_amount": quantity * current_price,
+                            "ma_period": 0,
+                            "ma_value": 0,
+                            "ma_condition": "삭제됨",
+                            "period_div_code": "",
+                            "reason": "구글 스프레드시트에서 종목이 삭제됨",
+                            "profit_loss": (current_price - avg_price) * quantity,
+                            "profit_loss_pct": (current_price - avg_price) / avg_price * 100
+                        }
+                        self.trade_history.add_trade(trade_data)
+                        
+                        # 캐시 초기화하여 다음 API 호출 시 최신 정보 조회하도록 함
+                        self.sold_stocks_cache_time = 0
+                    continue
                 
                 # 매도 조건 확인
                 ma_period = 0
+                ma_condition = "종가"  # 기본값
+                period_div_code = "D"  # 기본값
+                
+                # 개별 종목에서 찾기
                 for _, row in self.individual_stocks.iterrows():
                     if row['종목코드'] == holding['ovrs_pdno']:
                         ma_period = int(row['매도기준'])
+                        ma_condition = row.get('매도조건', '종가')
+                        period_div_code = row.get('매도기준2', '일')
+                        period_div_code = "D" if period_div_code == "일" else "W"
                         break
                 
+                # 개별 종목에서 찾지 못한 경우 POOL 종목에서 찾기
                 if ma_period == 0:
                     for _, row in self.pool_stocks.iterrows():
                         if row['종목코드'] == holding['ovrs_pdno']:
-                            ma_period = int(row['매도도기준'])
+                            ma_period = int(row['매도기준'])
+                            ma_condition = row.get('매도조건', '종가')
+                            period_div_code = row.get('매도기준2', '주')
+                            period_div_code = "D" if period_div_code == "일" else "W"
                             break
                 
                 if ma_period == 0:
@@ -803,13 +891,14 @@ class USTrader(BaseTrader):
                 prev_close = float(current_price_data['output']['base'])
                 
                 # 매도 조건 확인 - 전일 종가를 기준으로 판단
-                sell_condition, ma = self.check_sell_condition(stock_code, ma_period, prev_close)
+                sell_condition, ma = self.check_sell_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
                 
                 if ma is None:
                     self.logger.warning(f"{stock_name}({stock_code})의 이동평균을 계산할 수 없습니다.")
                     continue
                     
                 if sell_condition:
+                    period_unit = "일선" if period_div_code == "D" else "주선"
                     self.logger.info(f"{stock_name}({stock_code}) - 매도 조건 충족: 전일 종가 ${prev_close:.2f} < MA{ma_period} ${ma:.2f}")
                     
                     # 매도 시 지정가의 1% 낮게 설정하여 시장가처럼 거래
@@ -843,7 +932,9 @@ class USTrader(BaseTrader):
                             "total_amount": quantity * current_price,
                             "ma_period": ma_period,
                             "ma_value": ma,
-                            "reason": f"{ma_period}일선 매도 조건 충족 (전일 종가 ${prev_close:.2f} < MA ${ma:.2f})",
+                            "ma_condition": ma_condition,
+                            "period_div_code": period_div_code,
+                            "reason": f"{period_div_code}봉 기준 {ma_condition} {ma_period}{period_unit} 매도 조건 충족 (전일 종가 ${prev_close:.2f} < MA ${ma:.2f})",
                             "profit_loss": (current_price - avg_price) * quantity,
                             "profit_loss_pct": (current_price - avg_price) / avg_price * 100
                         }
@@ -916,7 +1007,23 @@ class USTrader(BaseTrader):
 
             # 종목 유형에 따라 일간/주간 데이터 사용
             is_individual = any(s['종목코드'] == stock_code.split('.')[0] for _, s in self.individual_stocks.iterrows())
-            period_div_code = "D" if is_individual else "W"  # 개별 종목은 일봉, POOL 종목은 주봉
+            # 매수기준2의 값에 따라 일봉/주봉 결정
+            if is_individual:
+                # 개별 종목인 경우 해당 종목 찾기
+                individual_match = self.individual_stocks[self.individual_stocks['종목코드'] == stock_code.split('.')[0]]
+                if not individual_match.empty:
+                    period_div_code = individual_match.iloc[0].get('매수기준2', '일')
+                    period_div_code = "D" if period_div_code == "일" else "W"
+                else:
+                    period_div_code = "D"  # 찾지 못한 경우 기본값
+            else:
+                # POOL 종목인 경우 해당 종목 찾기
+                pool_match = self.pool_stocks[self.pool_stocks['종목코드'] == stock_code.split('.')[0]]
+                if not pool_match.empty:
+                    period_div_code = pool_match.iloc[0].get('매수기준2', '주')
+                    period_div_code = "D" if period_div_code == "일" else "W"
+                else:
+                    period_div_code = "W"  # 찾지 못한 경우 기본값
             
             # 매수 조건 체크
             should_buy, ma = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
@@ -1375,7 +1482,6 @@ class USTrader(BaseTrader):
             
             summary_range = f"{holdings_sheet}!K5:K7"
             self.google_sheet.update_range(summary_range, summary_data)
-            self.logger.info("미국 주식 요약 정보 업데이트 완료")
             
         except Exception as e:
             self.logger.error(f"미국 주식 현황 업데이트 실패: {str(e)}")

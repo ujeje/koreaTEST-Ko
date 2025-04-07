@@ -36,13 +36,12 @@ google_sheet:
       max_pool_stocks: "H5"          # 최대 POOL 종목 수
 
       # 공통 설정
-      stop_loss: "H14"               # 스탑로스 설정값 (%)
-      trailing_start: "H15"          # 트레일링 시작 설정값 (%)
-      trailing_stop: "H16"           # 트레일링 스탑 설정값 (%)
-      rebalancing_date: "H11"        # 리밸런싱 일자
-      rebalancing_ratio: "H12"       # 리밸런싱 비율 (%)
-      individual_stocks: "A21:L50"   # 개별 종목 목록 범위
-      pool_stocks: "A61:L80"         # POOL 종목 목록 범위
+      stop_loss: "H10"               # 스탑로스 설정값 (%)
+      trailing_start: "H11"          # 트레일링 시작 설정값 (%)
+      trailing_stop: "H12"           # 트레일링 스탑 설정값 (%)
+      rebalancing_date: "H7"        # 리밸런싱 일자
+      individual_stocks: "A21:N50"   # 개별 종목 목록 범위
+      pool_stocks: "A61:N80"         # POOL 종목 목록 범위
     
     # 주식현황 탭의 각 항목 좌표 (국내/미국 공통)
     holdings:
@@ -52,6 +51,7 @@ google_sheet:
 
 # 매매 설정
 trading:
+  is_test_mode: false               # 테스트 모드 여부 (true: 항상 장 시작으로 간주, false: 실제 시간 기준 장 시작 확인)
   market:
     type: ['KOR']                    # 거래 시장 설정 (KOR: 한국, USA: 미국)  type: ['KOR', 'USA']
   kor_market_start: '0900'           # 한국 장 시작 시간 (HHMM)

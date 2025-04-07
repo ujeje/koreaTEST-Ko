@@ -70,7 +70,6 @@ class GoogleSheetManager:
                 f"{settings_sheet}!{self.coordinates['settings']['trailing_start']}",
                 f"{settings_sheet}!{self.coordinates['settings']['trailing_stop']}",
                 f"{settings_sheet}!{self.coordinates['settings']['rebalancing_date']}",
-                f"{settings_sheet}!{self.coordinates['settings']['rebalancing_ratio']}",
             ]
 
             # 설정값 조회
@@ -89,7 +88,6 @@ class GoogleSheetManager:
                 'trailing_start': float(value_ranges[3]['values'][0][0]) if value_ranges[3].get('values') else 10.0,
                 'trailing_stop': float(value_ranges[4]['values'][0][0]) if value_ranges[4].get('values') else 5.0,
                 'rebalancing_date': value_ranges[5]['values'][0][0] if value_ranges[5].get('values') else "",
-                'rebalancing_ratio': float(value_ranges[6]['values'][0][0]) / 100 if value_ranges[6].get('values') else 1,
             }
 
             return settings
@@ -104,7 +102,6 @@ class GoogleSheetManager:
                 'trailing_start': 10.0,
                 'trailing_stop': 5.0,
                 'rebalancing_date': "",
-                'rebalancing_ratio': 1,
             }
 
             return default_settings
@@ -191,7 +188,7 @@ class GoogleSheetManager:
             ).execute()
             
             values = result.get('values', [])
-            columns = ['거래소', '종목코드', '종목명', '매수시작', '매수종료', '배분비율', '매수기준', '매수조건', '매수설명', '매도기준', '매도조건', '매도설명']
+            columns = ['거래소', '종목코드', '종목명', '매수시작', '매수종료', '배분비율', '매수조건', '매수기준', '매수기준2', '매수설명', '매도조건', '매도기준', '매도기준2', '매도설명']
             if not values:
                 error_msg = "개별 종목 시트에 데이터가 없습니다. 설정을 확인해주세요."
                 self.logger.error(error_msg)
@@ -230,11 +227,15 @@ class GoogleSheetManager:
             df['매도기준'] = df['매도기준'].apply(lambda x: safe_numeric_conversion(x, 20))
             df['배분비율'] = df['배분비율'].apply(lambda x: safe_numeric_conversion(x, 10))
             
-            # 매수/매도 조건이 없는 경우 기본값 설정
+            # 매수/매도 조건과 기준2가 없는 경우 기본값 설정
             if '매수조건' not in df.columns:
                 df['매수조건'] = '종가'
             if '매도조건' not in df.columns:
                 df['매도조건'] = '종가'
+            if '매수기준2' not in df.columns:
+                df['매수기준2'] = '일'
+            if '매도기준2' not in df.columns:
+                df['매도기준2'] = '일'
             
             # 매수 기간이 유효한 종목만 필터링
             valid_period = df.apply(lambda x: self._check_trading_period(x['매수시작'], x['매수종료']), axis=1)
@@ -276,7 +277,7 @@ class GoogleSheetManager:
             ).execute()
             
             values = result.get('values', [])
-            columns = ['거래소', '종목코드', '종목명', '매수시작', '매수종료', '배분비율', '매수기준', '매수조건', '매수설명', '매도기준', '매도조건', '매도설명']
+            columns = ['거래소', '종목코드', '종목명', '매수시작', '매수종료', '배분비율', '매수조건', '매수기준', '매수기준2', '매수설명', '매도조건', '매도기준', '매도기준2', '매도설명']
             if not values:
                 error_msg = "POOL 종목 시트에 데이터가 없습니다. 설정을 확인해주세요."
                 self.logger.error(error_msg)
@@ -315,11 +316,15 @@ class GoogleSheetManager:
             df['매도기준'] = df['매도기준'].apply(lambda x: safe_numeric_conversion(x, 20))
             df['배분비율'] = df['배분비율'].apply(lambda x: safe_numeric_conversion(x, 10))
             
-            # 매수/매도 조건이 없는 경우 기본값 설정
+            # 매수/매도 조건과 기준2가 없는 경우 기본값 설정
             if '매수조건' not in df.columns:
                 df['매수조건'] = '종가'
             if '매도조건' not in df.columns:
                 df['매도조건'] = '종가'
+            if '매수기준2' not in df.columns:
+                df['매수기준2'] = '주'
+            if '매도기준2' not in df.columns:
+                df['매도기준2'] = '주'
             
             # 매수 기간이 유효한 종목만 필터링
             valid_period = df.apply(lambda x: self._check_trading_period(x['매수시작'], x['매수종료']), axis=1)

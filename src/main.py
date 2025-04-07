@@ -11,6 +11,14 @@ from src.utils.google_sheet_manager import GoogleSheetManager
 
 def is_korean_market_time(kr_trader = None) -> bool:
     """한국 시장 운영 시간인지 확인합니다."""
+    # 설정 파일 로드
+    with open('config/config.yaml', 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+    
+    # 테스트 모드인 경우 항상 True 반환
+    if config['trading'].get('is_test_mode', False):
+        return True
+        
     # KRTrader 객체가 전달된 경우, 휴장일 체크를 포함한 시장 상태 확인 (API 활용)
     if kr_trader:
         return kr_trader.check_market_condition()
@@ -25,9 +33,6 @@ def is_korean_market_time(kr_trader = None) -> bool:
         return False
     
     # 장 운영 시간 체크 - config에 정의된 시간 사용
-    with open('config/config.yaml', 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-    
     kor_market_start = config['trading']['kor_market_start']
     kor_market_end = config['trading']['kor_market_end']
     
@@ -35,6 +40,14 @@ def is_korean_market_time(kr_trader = None) -> bool:
 
 def is_us_market_time(us_trader = None) -> bool:
     """미국 시장 운영 시간인지 확인합니다."""
+    # 설정 파일 로드
+    with open('config/config.yaml', 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+    
+    # 테스트 모드인 경우 항상 True 반환
+    if config['trading'].get('is_test_mode', False):
+        return True
+        
     # USTrader 객체가 전달된 경우, 휴장일 체크를 포함한 시장 상태 확인 (API 활용)
     if us_trader:
         return us_trader.check_market_condition()
@@ -50,9 +63,6 @@ def is_us_market_time(us_trader = None) -> bool:
         return False
     
     # 장 운영 시간 체크 - config에 정의된 시간 사용
-    with open('config/config.yaml', 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-    
     usa_market_start = config['trading']['usa_market_start']
     usa_market_end = config['trading']['usa_market_end']
     
