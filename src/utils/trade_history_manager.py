@@ -186,7 +186,7 @@ class TradeHistoryManager:
         
         trade_date = datetime.strptime(trade_data["timestamp"], "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
         
-        # 종목 정보 조회 또는 생성
+        # 종목 정보 조회 또는 생성 - 구글 스프레드시트에 종목이 없어도 거래 데이터를 기반으로 stock_history 테이블에 정보를 저장
         cursor.execute('''
         INSERT OR IGNORE INTO stock_history (stock_code, stock_name, first_buy_date, last_sell_date, highest_price, all_sold)
         VALUES (?, ?, NULL, NULL, 0, 1)

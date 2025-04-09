@@ -11,6 +11,7 @@ from src.utils.trade_history_manager import TradeHistoryManager
 import time
 import exchange_calendars as xcals
 import logging
+import sqlite3
 
 class USTrader(BaseTrader):
     """미국 주식 트레이더"""
@@ -1420,10 +1421,29 @@ class USTrader(BaseTrader):
                 current_price_data = self._retry_api_call(self.us_api.get_stock_price, full_stock_code)
                 
                 if current_price_data:
+                    # 현재가
+                    current_price = round(float(current_price_data['output']['last']), 2)
+                    stock_code = holding['ovrs_pdno']
+                    stock_name = holding['ovrs_item_name']
+                    
+                    # 구글 스프레드시트에 없는 종목이더라도 stock_history에 정보 업데이트
+                    # trade_history에 stock_history 데이터 추가
+                    trade_data = {
+                        "trade_type": "USER",
+                        "trade_action": "BUY",
+                        "stock_code": stock_code,
+                        "stock_name": stock_name,
+                        "quantity": int(holding['ovrs_cblc_qty']),
+                        "price": current_price,
+                        "total_amount": current_price * int(holding['ovrs_cblc_qty']),
+                        "reason": "주식현황 업데이트"
+                    }
+                    self.trade_history.add_trade(trade_data)
+                    
                     holdings_data.append([
-                        holding['ovrs_pdno'],                                           # 종목코드
-                        holding['ovrs_item_name'],                           # 종목명
-                        round(float(current_price_data['output']['last']), 2),         # 현재가
+                        stock_code,                                           # 종목코드
+                        stock_name,                                          # 종목명
+                        current_price,                                       # 현재가
                         '',                                                  # 구분
                         round(float(current_price_data['output']['rate']), 2),         # 등락률
                         round(float(holding['pchs_avg_pric']), 2),                     # 평단가

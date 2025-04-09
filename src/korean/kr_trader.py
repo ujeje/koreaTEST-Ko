@@ -9,6 +9,7 @@ from src.korean.kis_kr_api import KISKRAPIManager
 from src.utils.trade_history_manager import TradeHistoryManager
 import time
 import pytz  # 시간대 처리를 위한 pytz 추가
+import sqlite3
 
 class KRTrader(BaseTrader):
     """한국 주식 트레이더"""
@@ -764,23 +765,61 @@ class KRTrader(BaseTrader):
                 # 트레일링 스탑으로 매도된 종목 체크
                 trailing_stop_price = self.get_trailing_stop_sell_price(stock_code)
                 if trailing_stop_price is not None:
-                    # 현재가 조회
+                    # 현재가 및 20일 이평선 조회
                     price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
                     if not price_data:
                         self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
                         continue
                     
                     current_price = float(price_data['output']['stck_prpr'])
+                    prev_close = float(price_data['output']['stck_sdpr'])
                     
-                    if current_price < trailing_stop_price:
+                    # 20일 이평선 계산
+                    ma20_values = self.calculate_ma(stock_code, 20, "D")
+                    if ma20_values is None:
+                        self.logger.error(f"{stock_name}({stock_code}) - 20일 이평선 계산 실패")
+                        continue
+                    
+                    ma20_value = ma20_values[1]  # 전일 20일 이평선
+                    
+                    # 트레일링 스탑 매도 후 재매수 조건 확인
+                    # 1. 20일 이평선 이하로 내려갔다가 다시 매수 조건을 충족하는 경우
+                    # 2. 계속 20일 이평선 위에 있지만, 매도가 이상으로 상승하는 경우
+                    
+                    # 매수 조건 체크 (매수 조건이 충족되는지 확인)
+                    ma_period = int(row['매수기준'])
+                    ma_condition = row.get('매수조건', '종가')
+                    period_div_code = row.get('매수기준2', '일')
+                    period_div_code = "D" if period_div_code == "일" else "W"
+                    is_buy, _ = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
+                    
+                    # 첫 번째 조건: 20일 이평선 이하로 내려갔다가 다시 매수 조건을 충족
+                    went_below_ma20 = prev_close <= ma20_value
+                    
+                    # 두 번째 조건: 계속 20일 이평선 위에 있지만, 매도가 이상으로 상승
+                    above_ma20_and_higher_price = (prev_close > ma20_value) and (current_price >= trailing_stop_price)
+                    
+                    if is_buy and (went_below_ma20 or above_ma20_and_higher_price):
+                        if went_below_ma20:
+                            msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 후 재매수 가능"
+                            msg += f"\n- 조건: 20일 이평선({ma20_value:,}원) 이하로 내려갔다가 매수 조건 충족"
+                            self.logger.info(msg)
+                        else:
+                            msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 후 재매수 가능"
+                            msg += f"\n- 조건: 현재가({current_price:,}원)가 트레일링 스탑 매도가({trailing_stop_price:,}원) 이상"
+                            self.logger.info(msg)
+                    else:
+                        reasons = []
+                        if not is_buy:
+                            reasons.append("매수 조건 미충족")
+                        if not went_below_ma20 and not above_ma20_and_higher_price:
+                            reasons.append("20일선 아래로 내려가지 않음 & 매도가 이상으로 상승하지 않음")
+                        
                         msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 종목 재매수 제한"
-                        msg += f"\n- 현재가({current_price:,}원)가 트레일링 스탑 매도가({trailing_stop_price:,}원) 미만"
+                        msg += f"\n- 현재가: {current_price:,}원, 20일 이평선: {ma20_value:,}원, 매도가: {trailing_stop_price:,}원"
+                        msg += f"\n- 사유: {', '.join(reasons)}"
                         self.logger.info(msg)
                         continue
-                    else:
-                        msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 종목 재매수 가능"
-                        msg += f"\n- 현재가({current_price:,}원)가 트레일링 스탑 매도가({trailing_stop_price:,}원) 이상"
-                        self.logger.info(msg)
                 
                 # 매수 기간 체크 (설정된 경우)
                 if 'buy_start_date' in row and 'buy_end_date' in row:
@@ -867,23 +906,61 @@ class KRTrader(BaseTrader):
                 # 트레일링 스탑으로 매도된 종목 체크
                 trailing_stop_price = self.get_trailing_stop_sell_price(stock_code)
                 if trailing_stop_price is not None:
-                    # 현재가 조회
+                    # 현재가 및 20일 이평선 조회
                     price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
                     if not price_data:
                         self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
                         continue
                     
                     current_price = float(price_data['output']['stck_prpr'])
+                    prev_close = float(price_data['output']['stck_sdpr'])
                     
-                    if current_price < trailing_stop_price:
+                    # 20일 이평선 계산
+                    ma20_values = self.calculate_ma(stock_code, 20, "D")
+                    if ma20_values is None:
+                        self.logger.error(f"{stock_name}({stock_code}) - 20일 이평선 계산 실패")
+                        continue
+                    
+                    ma20_value = ma20_values[1]  # 전일 20일 이평선
+                    
+                    # 트레일링 스탑 매도 후 재매수 조건 확인
+                    # 1. 20일 이평선 이하로 내려갔다가 다시 매수 조건을 충족하는 경우
+                    # 2. 계속 20일 이평선 위에 있지만, 매도가 이상으로 상승하는 경우
+                    
+                    # 매수 조건 체크 (매수 조건이 충족되는지 확인)
+                    ma_period = int(row['매수기준'])
+                    ma_condition = row.get('매수조건', '종가')
+                    period_div_code = row.get('매수기준2', '일')
+                    period_div_code = "D" if period_div_code == "일" else "W"
+                    is_buy, _ = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
+                    
+                    # 첫 번째 조건: 20일 이평선 이하로 내려갔다가 다시 매수 조건을 충족
+                    went_below_ma20 = prev_close <= ma20_value
+                    
+                    # 두 번째 조건: 계속 20일 이평선 위에 있지만, 매도가 이상으로 상승
+                    above_ma20_and_higher_price = (prev_close > ma20_value) and (current_price >= trailing_stop_price)
+                    
+                    if is_buy and (went_below_ma20 or above_ma20_and_higher_price):
+                        if went_below_ma20:
+                            msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 후 재매수 가능"
+                            msg += f"\n- 조건: 20일 이평선({ma20_value:,}원) 이하로 내려갔다가 매수 조건 충족"
+                            self.logger.info(msg)
+                        else:
+                            msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 후 재매수 가능"
+                            msg += f"\n- 조건: 현재가({current_price:,}원)가 트레일링 스탑 매도가({trailing_stop_price:,}원) 이상"
+                            self.logger.info(msg)
+                    else:
+                        reasons = []
+                        if not is_buy:
+                            reasons.append("매수 조건 미충족")
+                        if not went_below_ma20 and not above_ma20_and_higher_price:
+                            reasons.append("20일선 아래로 내려가지 않음 & 매도가 이상으로 상승하지 않음")
+                        
                         msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 종목 재매수 제한"
-                        msg += f"\n- 현재가({current_price:,}원)가 트레일링 스탑 매도가({trailing_stop_price:,}원) 미만"
+                        msg += f"\n- 현재가: {current_price:,}원, 20일 이평선: {ma20_value:,}원, 매도가: {trailing_stop_price:,}원"
+                        msg += f"\n- 사유: {', '.join(reasons)}"
                         self.logger.info(msg)
                         continue
-                    else:
-                        msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 종목 재매수 가능"
-                        msg += f"\n- 현재가({current_price:,}원)가 트레일링 스탑 매도가({trailing_stop_price:,}원) 이상"
-                        self.logger.info(msg)
                 
                 # 현재가 조회
                 price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
@@ -1125,248 +1202,6 @@ class KRTrader(BaseTrader):
             self.logger.error(f"매수 주문 실행 중 오류 발생: {str(e)}")
             raise
     
-    def _execute_sell_orders(self) -> None:
-        """매도 주문을 실행합니다."""
-        try:
-            # 계좌 잔고 조회
-            balance = self._retry_api_call(self.kr_api.get_account_balance)
-            if not balance:
-                self.logger.error("계좌 잔고 조회 실패")
-                return
-            
-            # 보유 종목이 없으면 종료
-            if not balance['output1']:
-                self.logger.info("보유 종목이 없습니다.")
-                return
-            
-            self.logger.info(f"[국내 시장] 보유 종목 수: {len(balance['output1'])}개")
-            
-            # 보유 종목 매도 조건 체크
-            sell_candidates = []
-            
-            # 구글 스프레드시트에 있는 종목 코드 리스트 생성
-            sheet_stock_codes = set()
-            # 개별 종목에서 종목 코드 추가
-            for _, row in self.individual_stocks.iterrows():
-                sheet_stock_codes.add(row['종목코드'])
-            # POOL 종목에서 종목 코드 추가
-            for _, row in self.pool_stocks.iterrows():
-                sheet_stock_codes.add(row['종목코드'])
-            
-            # 각 종목별로 매도 조건 체크
-            for holding in balance['output1']:
-                # 보유량이 0이면 스킵
-                if int(holding.get('hldg_qty', 0)) <= 0:
-                    continue
-                
-                stock_code = holding['pdno']
-                stock_name = holding['prdt_name']
-                quantity = int(holding['hldg_qty'])
-                
-                # 구글 스프레드시트에서 삭제된 종목 체크
-                if stock_code not in sheet_stock_codes:
-                    # 현재가 조회
-                    price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
-                    if not price_data:
-                        self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
-                        continue
-                    
-                    current_price = float(price_data['output']['stck_prpr'])
-                    
-                    self.logger.info(f"{stock_name}({stock_code}) - 구글 스프레드시트에서 삭제된 종목이므로 매도 후보에 추가합니다.")
-                    
-                    sell_candidates.append({
-                        'code': stock_code,
-                        'name': stock_name,
-                        'quantity': quantity,
-                        'price': current_price,
-                        'ma_period': 0,
-                        'ma_value': 0,
-                        'prev_close': 0,
-                        'ma_condition': "삭제됨",
-                        'period_div_code': ""
-                    })
-                    continue
-                
-                # 종목이 개별 종목인지 POOL 종목인지 확인
-                is_individual = False
-                ma_period = 20  # 기본값
-                ma_condition = "종가"  # 기본값
-                period_div_code = "D"  # 기본값
-                
-                # 개별 종목에서 찾기
-                individual_match = self.individual_stocks[self.individual_stocks['종목코드'] == stock_code]
-                if not individual_match.empty:
-                    is_individual = True
-                    ma_period = int(individual_match.iloc[0]['매도기준'])
-                    ma_condition = individual_match.iloc[0].get('매도조건', '종가')
-                    period_div_code = individual_match.iloc[0].get('매도기준2', '일')  # 일/주 결정
-                    period_div_code = "D" if period_div_code == "일" else "W"  # 일/주 변환
-                else:
-                    # POOL 종목에서 찾기
-                    pool_match = self.pool_stocks[self.pool_stocks['종목코드'] == stock_code]
-                    if not pool_match.empty:
-                        ma_period = int(pool_match.iloc[0]['매도기준'])
-                        ma_condition = pool_match.iloc[0].get('매도조건', '종가')
-                        period_div_code = pool_match.iloc[0].get('매도기준2', '주')  # 일/주 결정
-                        period_div_code = "D" if period_div_code == "일" else "W"  # 일/주 변환
-                    else:
-                        # 기준을 찾을 수 없는 경우 (기본값 사용)
-                        self.logger.warning(f"{stock_name}({stock_code}) - 매도 기준을 찾을 수 없어 기본값 사용: {ma_period}일선, 전일 종가")
-                
-                # 현재가 조회
-                price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
-                if not price_data:
-                    self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
-                    continue
-                
-                current_price = float(price_data['output']['stck_prpr'])
-                prev_close = float(price_data['output']['stck_sdpr'])
-                
-                # 매도 조건 체크
-                is_sell, ma_value = self.check_sell_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
-                
-                if is_sell:
-                    sell_msg = f"{stock_name}({stock_code}) - 매도 조건 충족"
-                    if period_div_code == "D":
-                        period_unit = "일선"
-                    else:
-                        period_unit = "주선"
-                        
-                    if ma_condition == "종가":
-                        sell_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}{period_unit}({ma_value:,.0f}원) 아래로 하향돌파"
-                    else:
-                        sell_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 데드크로스"
-                    
-                    self.logger.info(sell_msg)
-                    
-                    sell_candidates.append({
-                        'code': stock_code,
-                        'name': stock_name,
-                        'quantity': quantity,
-                        'price': current_price,
-                        'ma_period': ma_period,
-                        'ma_value': ma_value,
-                        'prev_close': prev_close,
-                        'ma_condition': ma_condition,
-                        'period_div_code': period_div_code
-                    })
-                else:
-                    if ma_value:
-                        if period_div_code == "D":
-                            period_unit = "일선"
-                        else:
-                            period_unit = "주선"
-                            
-                        miss_msg = f"{stock_name}({stock_code}) - 매도 조건 미충족"
-                        if ma_condition == "종가":
-                            miss_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}{period_unit}({ma_value:,.0f}원) 아래로 하향돌파하지 않음"
-                        else:
-                            miss_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 데드크로스하지 않음"
-                        
-                        self.logger.info(miss_msg)
-                    else:
-                        self.logger.info(f"{stock_name}({stock_code}) - 이동평균 계산 실패")
-            
-            # 매도 후보가 없으면 종료
-            if not sell_candidates:
-                self.logger.info("매도 조건을 충족하는 종목이 없습니다.")
-                return
-            
-            self.logger.info(f"[국내 시장] 매도 후보 종목 수: {len(sell_candidates)}개")
-            
-            # 매도 실행
-            for candidate in sell_candidates:
-                stock_code = candidate['code']
-                stock_name = candidate['name']
-                quantity = candidate['quantity']
-                price = candidate['price']
-                ma_period = candidate['ma_period']
-                ma_value = candidate['ma_value'] 
-                prev_close = candidate['prev_close']
-                ma_condition = candidate['ma_condition']
-                period_div_code = candidate['period_div_code']
-                
-                # 매도 주문 실행
-                self.logger.info(f"{stock_name}({stock_code}) - 매도 주문: {quantity}주 @ {price:,.0f}원")
-                
-                order_result = self._retry_api_call(
-                    self.kr_api.order_stock,
-                    stock_code,
-                    "SELL",
-                    quantity
-                )
-                
-                if order_result and order_result['rt_cd'] == '0':
-                    self.logger.info(f"{stock_name}({stock_code}) - 매도 주문 성공: 주문번호 {order_result['output']['ODNO']}")
-                    
-                    # 거래 내역 저장
-                    reason = ""
-                    if ma_condition == "삭제됨":
-                        reason = "구글 스프레드시트에서 종목이 삭제됨"
-                    else:
-                        if period_div_code == "D":
-                            period_unit = "일선"
-                        else:
-                            period_unit = "주선"
-                            
-                        if ma_condition == "종가":
-                            reason = f"{ma_period}{period_unit} 매도 조건 충족 (전일 종가 {prev_close:,.0f}원 < MA {ma_value:,.0f}원)"
-                        else:
-                            reason = f"{ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생"
-                    
-                    trade_data = {
-                        "trade_type": "SELL",
-                        "trade_action": "SELL",
-                        "stock_code": stock_code,
-                        "stock_name": stock_name,
-                        "quantity": quantity,
-                        "price": price,
-                        "total_amount": quantity * price,
-                        "ma_period": ma_period,
-                        "ma_value": ma_value,
-                        "reason": reason,
-                        "order_type": "SELL"
-                    }
-                    self.trade_history.add_trade(trade_data)
-                    
-                    # 매도 상세 정보 로깅
-                    msg = f"매도 주문 실행: {stock_name}({stock_code}) {quantity}주"
-                    if ma_condition == "삭제됨":
-                        msg += f"\n- 매도 사유: 구글 스프레드시트에서 종목이 삭제됨"
-                    else:
-                        msg += f"\n- 매도 사유: 이동평균 하향돌파 (전일종가: {prev_close:,.0f}원 < {ma_period}일선: {ma_value:,.0f}원)"
-                    msg += f"\n- 매도 금액: {quantity * price:,.0f}원"
-                    self.logger.info(msg)
-                    
-                    # 캐시 초기화하여 다음 API 호출 시 최신 정보 조회하도록 함
-                    self.sold_stocks_cache_time = 0
-                else:
-                    self.logger.error(f"{stock_name}({stock_code}) - 매도 주문 실패")
-            
-        except Exception as e:
-            self.logger.error(f"매도 주문 실행 중 오류 발생: {str(e)}")
-            raise
-    
-    def _check_stop_conditions(self) -> None:
-        """스탑로스 및 트레일링 스탑 조건을 확인합니다."""
-        try:
-            balance = self.kr_api.get_account_balance()
-            if balance is None:
-                return
-            
-            for holding in balance['output1']:
-                stock_code = holding['pdno']
-                current_price_data = self.kr_api.get_stock_price(stock_code)
-                if current_price_data is None:
-                    continue
-                
-                current_price = float(current_price_data['output']['stck_prpr'])
-                self._check_stop_conditions_for_stock(holding, current_price)
-                
-        except Exception as e:
-            self.logger.error(f"스탑 조건 체크 중 오류 발생: {str(e)}")
-    
     def _check_stop_conditions_for_stock(self, holding: Dict, current_price: float) -> bool:
         """개별 종목의 스탑로스와 트레일링 스탑 조건을 체크합니다."""
         try:
@@ -1558,10 +1393,27 @@ class KRTrader(BaseTrader):
                 current_price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
                 
                 if current_price_data:
+                    # 현재가
+                    current_price = round(float(current_price_data['output']['stck_prpr']), 2)
+                    
+                    # 구글 스프레드시트에 없는 종목이더라도 stock_history에 정보 업데이트
+                    # trade_history에 stock_history 데이터 추가
+                    trade_data = {
+                        "trade_type": "USER",
+                        "trade_action": "BUY",
+                        "stock_code": stock_code,
+                        "stock_name": holding['prdt_name'],
+                        "quantity": int(holding['ord_psbl_qty']),
+                        "price": current_price,
+                        "total_amount": current_price * int(holding['ord_psbl_qty']),
+                        "reason": "주식현황 업데이트"
+                    }
+                    self.trade_history.add_trade(trade_data)
+                    
                     holdings_data.append([
                         stock_code,                                           # 종목코드
                         holding['prdt_name'],                                # 종목명
-                        round(float(current_price_data['output']['stck_prpr']), 2),   # 현재가
+                        current_price,                                       # 현재가
                         '',                                                  # 구분
                         round(float(current_price_data['output']['prdy_ctrt']), 2),   # 등락률
                         round(float(holding['pchs_avg_pric']), 2),                    # 평단가
