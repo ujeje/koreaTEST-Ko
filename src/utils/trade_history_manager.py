@@ -385,6 +385,43 @@ class TradeHistoryManager:
             print(f"거래 내역 조회 중 오류 발생: {str(e)}")
             return []
     
+    def get_last_ts_sell_date(self, stock_code: str) -> Optional[str]:
+        """특정 종목의 마지막 트레일링 스탑 매도 날짜를 조회합니다.
+        
+        Args:
+            stock_code (str): 종목 코드
+            
+        Returns:
+            Optional[str]: 마지막 트레일링 스탑 매도 날짜 (YYYY-MM-DD 형식), 없으면 None
+        """
+        try:
+            # 미국장의 경우 거래소 코드 제외 (코드.거래소 형식에서 코드만 추출)
+            if self.market_type.upper() == "USA" and "." in stock_code:
+                stock_code = stock_code.split(".")[0]
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # 트레일링 스탑 매도 내역 중 가장 최근 날짜 조회
+            cursor.execute('''
+            SELECT substr(timestamp, 1, 10) as trade_date
+            FROM trades
+            WHERE stock_code = ? AND trade_type = 'TRAILING_STOP' AND trade_action = 'SELL'
+            ORDER BY timestamp DESC
+            LIMIT 1
+            ''', (stock_code,))
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                return result[0]  # YYYY-MM-DD 형식의 날짜 반환
+            return None
+            
+        except Exception as e:
+            print(f"트레일링 스탑 매도 날짜 조회 중 오류 발생: {str(e)}")
+            return None
+    
     def update_highest_price(self, stock_code: str, price: float) -> None:
         """종목의 최고가를 업데이트합니다.
         
@@ -455,4 +492,47 @@ class TradeHistoryManager:
             
         except Exception as e:
             print(f"최고가 조회 중 오류 발생: {str(e)}")
-            return 0 
+            return 0
+    
+    def get_trades_by_code(self, stock_code: str) -> List[Dict[str, Any]]:
+        """특정 종목 코드에 해당하는 모든 거래 내역을 조회합니다.
+        
+        Args:
+            stock_code (str): 종목 코드
+            
+        Returns:
+            List[Dict[str, Any]]: 거래 내역 목록
+                - 각 거래 내역은 trades 테이블의 모든 필드를 포함
+        """
+        try:
+            # 미국장의 경우 거래소 코드 제외 (코드.거래소 형식에서 코드만 추출)
+            if self.market_type.upper() == "USA" and "." in stock_code:
+                stock_code = stock_code.split(".")[0]
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            SELECT *
+            FROM trades
+            WHERE stock_code = ?
+            ORDER BY timestamp
+            ''', (stock_code,))
+            
+            trades = cursor.fetchall()
+            conn.close()
+            
+            # 컬럼명 매핑
+            columns = [description[0] for description in cursor.description]
+            
+            # 결과 구성
+            result = []
+            for trade in trades:
+                trade_dict = dict(zip(columns, trade))
+                result.append(trade_dict)
+            
+            return result
+            
+        except Exception as e:
+            print(f"거래 내역 조회 중 오류 발생: {str(e)}")
+            return [] 

@@ -9,7 +9,6 @@ from src.korean.kis_kr_api import KISKRAPIManager
 from src.utils.trade_history_manager import TradeHistoryManager
 import time
 import pytz  # 시간대 처리를 위한 pytz 추가
-import sqlite3
 
 class KRTrader(BaseTrader):
     """한국 주식 트레이더"""
@@ -156,99 +155,250 @@ class KRTrader(BaseTrader):
         
         return is_open
     
-    def calculate_ma(self, stock_code: str, period: int = 20, period_div_code: str = "D") -> Optional[tuple]:
-        """이동평균을 계산합니다.
-        
-        Args:
-            stock_code (str): 종목코드
-            period (int): 이동평균 기간
-            period_div_code (str): 기간 구분 코드 (D: 일봉, W: 주봉)
-        
-        Returns:
-            Optional[tuple]: (전전일 이동평균값, 전일 이동평균값) 또는 None
+    def calculate_ma(self, stock_code, period_div_code, period):
         """
-        try:
-            end_date = datetime.now().strftime("%Y%m%d")
-            # 이동평균 계산을 위해 필요한 데이터 기간 (기본 2배로 설정)
-            # 주간 데이터일 경우 더 긴 기간 필요
-            required_days = period * 2
-            if period_div_code == "W":
-                required_days = period * 14  # 주간 데이터는 더 긴 기간 필요
-            
-            start_date = (datetime.now() - timedelta(days=required_days)).strftime("%Y%m%d")
-            
-            # API 제한(100일)을 고려하여 데이터 조회
-            all_data = []
-            current_end_date = datetime.now()
-            start_datetime = datetime.now() - timedelta(days=required_days)
-            
-            # 필요한 기간이 100일 이하인 경우 한 번에 조회
+        주어진 종목의 이동평균선 계산
+        Args:
+            stock_code: 종목코드
+            period_div_code: 일/주 구분 코드
+            period: 이동평균 기간
+        Returns:
+            (전전봉 이동평균, 전봉 이동평균)
+        """
+        today = datetime.now()
+        end_date = today.strftime("%Y%m%d")
+        
+        # 필요한 데이터 기간 계산
+        required_days = period * 2
+        required_weeks = period * 2
+        
+        if period_div_code == "D":
+            # API 제한(100일)을 고려한 효율적인 데이터 조회
             if required_days <= 100:
-                df = self.kr_api.get_daily_price(stock_code, start_date, end_date, period_div_code)
-                if df is None or len(df) < period + 1:  # 최소한 period+1개의 데이터가 필요
+                # 100일 이내의 데이터는 한 번에 조회 가능
+                start_date = (today - timedelta(days=required_days)).strftime("%Y%m%d")
+                
+                try:
+                    hist_data = self._retry_api_call(
+                        self.kr_api.get_daily_price,
+                        stock_code,
+                        start_date,
+                        end_date,
+                        period_div_code
+                    )
+                    
+                    if hist_data is not None and len(hist_data) >= period + 2:
+                        # DataFrame으로 변환 (이미 DataFrame으로 반환될 경우 변환 생략)
+                        df = hist_data if isinstance(hist_data, pd.DataFrame) else pd.DataFrame(hist_data)
+                        # 정렬
+                        df['stck_bsop_date'] = pd.to_datetime(df['stck_bsop_date'])
+                        df = df.sort_values('stck_bsop_date', ascending=True).reset_index(drop=True)
+                        # 이동평균 계산
+                        df['stck_clpr'] = df['stck_clpr'].astype(float)
+                        ma_series = df['stck_clpr'].rolling(window=period).mean()
+                        # 전전일, 전일 이동평균값 반환
+                        ma_prev2 = ma_series.iloc[-3]  # 전전일
+                        ma_prev = ma_series.iloc[-2]   # 전일
+                        return (ma_prev2, ma_prev)
+                    
+                    self.logger.warning(f"{stock_code}: 일간 데이터 부족, 계산 불가 (현재: {len(hist_data) if hist_data is not None else 0}개, 필요: {period+2}개)")
                     return None
                     
-                # 이동평균 계산
-                ma_series = df['stck_clpr'].astype(float).rolling(window=period).mean()
-                # 전전일, 전일 이동평균값 반환
-                ma_prev2 = ma_series.iloc[-3]  # 전전일
-                ma_prev = ma_series.iloc[-2]    # 전일
-                return (ma_prev2, ma_prev)
+                except Exception as e:
+                    self.logger.error(f"{stock_code}: 일간 데이터 조회 중 오류 발생 - {str(e)}")
+                    return None
+            else:
+                # 100일 초과 데이터가 필요한 경우 분할 조회
+                try:
+                    # 분할 조회를 위한 설정
+                    all_data = []
+                    current_end_date = datetime.now()
+                    # 필요한 기간의 2배로 여유있게 설정 (필요한 경우 조정 가능)
+                    start_datetime = datetime.now() - timedelta(days=required_days * 2)
+                    
+                    while current_end_date >= start_datetime:
+                        # 현재 조회 기간의 시작일 계산 (최대 100일)
+                        current_start_date = current_end_date - timedelta(days=100)
+                        
+                        # 시작일보다 이전으로 가지 않도록 조정
+                        if current_start_date < start_datetime:
+                            current_start_date = start_datetime
+                        
+                        # 날짜 형식 변환
+                        current_start_date_str = current_start_date.strftime("%Y%m%d")
+                        current_end_date_str = current_end_date.strftime("%Y%m%d")
+                        
+                        self.logger.debug(f"일간 데이터 분할 조회: {stock_code}, {current_start_date_str} ~ {current_end_date_str}")
+                        
+                        # API 호출하여 데이터 조회
+                        hist_data = self._retry_api_call(
+                            self.kr_api.get_daily_price,
+                            stock_code,
+                            current_start_date_str,
+                            current_end_date_str,
+                            period_div_code
+                        )
+                        
+                        if hist_data is not None and len(hist_data) > 0:
+                            all_data.append(hist_data)
+                        
+                        # 다음 조회 기간 설정 (1일 겹치지 않게)
+                        current_end_date = current_start_date - timedelta(days=1)
+                        
+                        # 필요한 데이터를 모두 조회했거나 시작일에 도달하면 종료
+                        if current_end_date < start_datetime:
+                            break
+                    
+                    # 조회된 데이터가 없는 경우
+                    if not all_data:
+                        self.logger.warning(f"{stock_code}: 일간 데이터 조회 실패, 데이터가 없습니다.")
+                        return None
+                    
+                    # 모든 데이터 합치기
+                    combined_df = pd.concat(all_data, ignore_index=True)
+                    
+                    # 중복 제거 (날짜 기준)
+                    combined_df['stck_bsop_date'] = pd.to_datetime(combined_df['stck_bsop_date'])
+                    combined_df = combined_df.drop_duplicates(subset=['stck_bsop_date'])
+                    combined_df = combined_df.sort_values('stck_bsop_date', ascending=True).reset_index(drop=True)
+                    
+                    # 데이터가 충분한지 확인
+                    if len(combined_df) < period + 2:
+                        self.logger.warning(f"{stock_code}: 일간 데이터 부족, 계산 불가 (현재: {len(combined_df)}개, 필요: {period+2}개)")
+                        return None
+                    
+                    # 이동평균 계산
+                    combined_df['stck_clpr'] = combined_df['stck_clpr'].astype(float)
+                    ma_series = combined_df['stck_clpr'].rolling(window=period).mean()
+                    
+                    # 전전일, 전일 이동평균값 반환
+                    ma_prev2 = ma_series.iloc[-3]  # 전전일
+                    ma_prev = ma_series.iloc[-2]   # 전일
+                    return (ma_prev2, ma_prev)
+                    
+                except Exception as e:
+                    self.logger.error(f"{stock_code}: 일간 데이터 분할 조회 중 오류 발생 - {str(e)}")
+                    return None
+                
+        elif period_div_code == "W":
+            # API 제한(100개)을 고려한 효율적인 데이터 조회
+            # 주간 데이터는 데이터 포인트가 적을 수 있지만, 긴 기간의 경우 100주를 초과할 수 있음
             
-            # 필요한 기간이 100일 초과인 경우 분할 조회
-            while current_end_date >= start_datetime:
-                # 현재 조회 기간의 시작일 계산 (최대 100일)
-                current_start_date = current_end_date - timedelta(days=99)
+            # 필요한 기간이 100주 이하인 경우 먼저 한 번에 조회 시도
+            if required_weeks <= 100:
+                # 100주 이내의 데이터 조회 시도
+                start_date = (today - timedelta(days=required_weeks * 7)).strftime("%Y%m%d")
                 
-                # 시작일보다 이전으로 가지 않도록 조정
-                if current_start_date < start_datetime:
-                    current_start_date = start_datetime
-                
-                # 날짜 형식 변환
-                current_start_date_str = current_start_date.strftime("%Y%m%d")
-                current_end_date_str = current_end_date.strftime("%Y%m%d")
-                
-                self.logger.debug(f"이동평균 계산을 위한 시세 조회: {stock_code}, {current_start_date_str} ~ {current_end_date_str}, 주기: {period_div_code}")
-                
-                # API 호출하여 데이터 조회
-                df = self.kr_api.get_daily_price(stock_code, current_start_date_str, current_end_date_str, period_div_code)
-                if df is not None and len(df) > 0:
-                    all_data.append(df)
-                
-                # 다음 조회 기간 설정 (하루 겹치지 않게)
-                current_end_date = current_start_date - timedelta(days=1)
-                
-                # 시작일에 도달하면 종료
-                if current_end_date < start_datetime:
-                    break
+                try:
+                    hist_data = self._retry_api_call(
+                        self.kr_api.get_daily_price,
+                        stock_code,
+                        start_date,
+                        end_date,
+                        period_div_code
+                    )
+                    
+                    if hist_data is not None and len(hist_data) >= period + 2:
+                        # 주간 데이터로 변환
+                        df = hist_data if isinstance(hist_data, pd.DataFrame) else pd.DataFrame(hist_data)
+                        # 정렬
+                        df['stck_bsop_date'] = pd.to_datetime(df['stck_bsop_date'])
+                        df = df.sort_values('stck_bsop_date', ascending=True).reset_index(drop=True)
+                        
+                        # 이동평균 계산
+                        df['stck_clpr'] = df['stck_clpr'].astype(float)
+                        ma_series = df['stck_clpr'].rolling(window=period).mean()
+                        
+                        # 데이터가 충분한지 확인
+                        if len(df) < period + 2:
+                            self.logger.warning(f"{stock_code}: 주간 데이터 부족, 계산 불가 (현재: {len(df)}개, 필요: {period+2}개)")
+                            return None
+                        
+                        # 전전주, 전주 이동평균값 반환
+                        ma_prev2 = ma_series.iloc[-3]  # 전전주
+                        ma_prev = ma_series.iloc[-2]   # 전주
+                        return (ma_prev2, ma_prev)
+                    
+                    # 데이터가 부족하면 더 긴 기간으로 재시도 (아래 코드로 진행)
+                    self.logger.debug(f"{stock_code}: 주간 데이터 부족, 더 긴 기간 조회 시도 (현재: {len(hist_data) if hist_data is not None else 0}개, 필요: {period+2}개)")
+                except Exception as e:
+                    self.logger.error(f"{stock_code}: 주간 데이터 첫 조회 중 오류 발생 - {str(e)}")
             
-            # 조회된 데이터가 없는 경우
-            if not all_data:
-                return None
-            
-            # 모든 데이터 합치기
-            combined_df = pd.concat(all_data, ignore_index=True)
-            
-            # 중복 제거 (날짜 기준)
-            if 'stck_bsop_date' in combined_df.columns:
+            # 100건 초과 데이터 필요 또는 첫 번째 시도 실패 시 분할 조회
+            try:
+                # 분할 조회를 위한 설정
+                all_data = []
+                current_end_date = datetime.now()
+                # 주간 데이터는 7배 길어진다
+                start_datetime = datetime.now() - timedelta(days=required_weeks * 7 * 2)  # 넉넉히 2배 기간으로 설정
+                
+                while current_end_date >= start_datetime:
+                    # 현재 조회 기간의 시작일 계산 (최대 100주에 해당하는 700일)
+                    current_start_date = current_end_date - timedelta(days=700)  # 100주 = 700일
+                    
+                    # 시작일보다 이전으로 가지 않도록 조정
+                    if current_start_date < start_datetime:
+                        current_start_date = start_datetime
+                    
+                    # 날짜 형식 변환
+                    current_start_date_str = current_start_date.strftime("%Y%m%d")
+                    current_end_date_str = current_end_date.strftime("%Y%m%d")
+                    
+                    self.logger.debug(f"주간 데이터 분할 조회: {stock_code}, {current_start_date_str} ~ {current_end_date_str}")
+                    
+                    # API 호출하여 데이터 조회
+                    hist_data = self._retry_api_call(
+                        self.kr_api.get_daily_price,
+                        stock_code,
+                        current_start_date_str,
+                        current_end_date_str,
+                        period_div_code
+                    )
+                    
+                    if hist_data is not None and len(hist_data) > 0:
+                        all_data.append(hist_data)
+                    
+                    # 다음 조회 기간 설정 (1일 겹치지 않게)
+                    current_end_date = current_start_date - timedelta(days=1)
+                    
+                    # 필요한 데이터를 모두 조회했거나 시작일에 도달하면 종료
+                    if current_end_date < start_datetime:
+                        break
+                
+                # 조회된 데이터가 없는 경우
+                if not all_data:
+                    self.logger.warning(f"{stock_code}: 주간 데이터 조회 실패, 데이터가 없습니다.")
+                    return None
+                
+                # 모든 데이터 합치기
+                combined_df = pd.concat(all_data, ignore_index=True)
+                
+                # 중복 제거 (날짜 기준)
+                combined_df['stck_bsop_date'] = pd.to_datetime(combined_df['stck_bsop_date'])
                 combined_df = combined_df.drop_duplicates(subset=['stck_bsop_date'])
                 combined_df = combined_df.sort_values('stck_bsop_date', ascending=True).reset_index(drop=True)
+                
+                # 데이터가 충분한지 확인
+                if len(combined_df) < period + 2:
+                    self.logger.warning(f"{stock_code}: 주간 데이터 부족, 계산 불가 (현재: {len(combined_df)}개, 필요: {period+2}개)")
+                    return None
+                
+                # 이동평균 계산
+                combined_df['stck_clpr'] = combined_df['stck_clpr'].astype(float)
+                ma_series = combined_df['stck_clpr'].rolling(window=period).mean()
+                
+                # 전전주, 전주 이동평균값 반환
+                ma_prev2 = ma_series.iloc[-3]  # 전전주
+                ma_prev = ma_series.iloc[-2]   # 전주
+                return (ma_prev2, ma_prev)
             
-            # 데이터가 충분한지 확인
-            if len(combined_df) < period + 1:  # 최소한 period+1개의 데이터가 필요
-                self.logger.warning(f"{stock_code}: 이동평균 계산을 위한 데이터가 부족합니다. (필요: {period+1}개, 실제: {len(combined_df)}개, 주기: {period_div_code})")
+            except Exception as e:
+                self.logger.error(f"{stock_code}: 주간 데이터 분할 조회 중 오류 발생 - {str(e)}")
                 return None
-            
-            # 이동평균 계산
-            ma_series = combined_df['stck_clpr'].astype(float).rolling(window=period).mean()
-            # 전전일, 전일 이동평균값 반환
-            ma_prev2 = ma_series.iloc[-3]  # 전전일
-            ma_prev = ma_series.iloc[-2]    # 전일
-            return (ma_prev2, ma_prev)
-            
-        except Exception as e:
-            self.logger.error(f"{period}일 이동평균 계산 실패 ({stock_code}, 주기: {period_div_code}): {str(e)}")
-            return None
+                
+        # 유효하지 않은 period_div_code
+        self.logger.error(f"유효하지 않은 기간 구분 코드: {period_div_code}")
+        return None
     
     def get_highest_price_since_first_buy(self, stock_code: str) -> float:
         """최초 매수일 이후부터 어제까지의 최고가를 조회합니다."""
@@ -302,7 +452,7 @@ class KRTrader(BaseTrader):
                 self.logger.debug(f"일별 시세 조회: {stock_code}, {start_date_str} ~ {end_date_str}")
                 
                 # API 호출하여 데이터 조회
-                df = self.kr_api.get_daily_price(stock_code, start_date_str, end_date_str)
+                df = self.kr_api.get_daily_price(stock_code, start_date_str, end_date_str, "D")
                 if df is not None and len(df) > 0:
                     all_data.append(df)
                 
@@ -363,13 +513,16 @@ class KRTrader(BaseTrader):
             # 전전일과 전일 이동평균값 추출
             ma_target_prev2, ma_target_prev = ma_target_values
             
+            # 기간 단위 설정
+            period_unit = "일" if period_div_code == "D" else "주"
+            
             # "종가" 조건: 전일 종가가 이동평균선 상향 돌파
             if ma_condition == "종가":
                 # 전일 종가가 이동평균선을 상향 돌파했는지 확인
                 # 즉, prev_close > ma_target_prev
                 is_buy = prev_close > ma_target_prev
                 if is_buy:
-                    self.logger.info(f"매수 조건 충족: {stock_code} - 전일 종가({prev_close:.2f})가 {ma_period}일선({ma_target_prev:.2f})을 상향돌파")
+                    self.logger.info(f"매수 조건 충족: {stock_code} - 전일 종가({prev_close:.2f})가 {ma_period}{period_unit}선({ma_target_prev:.2f})을 상향돌파")
                 return is_buy, ma_target_prev
             
             # 골든크로스 조건: ma_condition에 지정된 이평선이 기준 이평선을 상향 돌파
@@ -393,8 +546,8 @@ class KRTrader(BaseTrader):
                     
                     if golden_cross:
                         self.logger.info(f"골든크로스 발생: {stock_code}")
-                        self.logger.info(f"- 전전일: {condition_period}일선(₩{ma_condition_prev2:.2f}) < {ma_period}일선(₩{ma_target_prev2:.2f})")
-                        self.logger.info(f"- 전일: {condition_period}일선(₩{ma_condition_prev:.2f}) > {ma_period}일선(₩{ma_target_prev:.2f})")
+                        self.logger.info(f"- 전전{period_unit}: {condition_period}{period_unit}선(₩{ma_condition_prev2:.2f}) < {ma_period}{period_unit}선(₩{ma_target_prev2:.2f})")
+                        self.logger.info(f"- 전{period_unit}: {condition_period}{period_unit}선(₩{ma_condition_prev:.2f}) > {ma_period}{period_unit}선(₩{ma_target_prev:.2f})")
                     
                     return golden_cross, ma_target_prev
                     
@@ -430,13 +583,16 @@ class KRTrader(BaseTrader):
             # 전전일과 전일 이동평균값 추출
             ma_target_prev2, ma_target_prev = ma_target_values
             
+            # 기간 단위 설정
+            period_unit = "일" if period_div_code == "D" else "주"
+            
             # "종가" 조건: 전일 종가가 이동평균선 하향 돌파
             if ma_condition == "종가":
                 # 전일 종가가 이동평균선 아래에 있는지 확인
                 # 즉, prev_close < ma_target_prev
                 is_sell = prev_close < ma_target_prev
                 if is_sell:
-                    self.logger.info(f"매도 조건 충족: {stock_code} - 전일 종가({prev_close:.2f})가 {ma_period}일선({ma_target_prev:.2f}) 아래로 하향돌파")
+                    self.logger.info(f"매도 조건 충족: {stock_code} - 전일 종가({prev_close:.2f})가 {ma_period}{period_unit}선({ma_target_prev:.2f}) 아래로 하향돌파")
                 return is_sell, ma_target_prev
             
             # 데드크로스 조건: ma_condition에 지정된 이평선이 기준 이평선을 하향 돌파
@@ -460,8 +616,8 @@ class KRTrader(BaseTrader):
                     
                     if dead_cross:
                         self.logger.info(f"데드크로스 발생: {stock_code}")
-                        self.logger.info(f"- 전전일: {condition_period}일선(₩{ma_condition_prev2:.2f}) > {ma_period}일선(₩{ma_target_prev2:.2f})")
-                        self.logger.info(f"- 전일: {condition_period}일선(₩{ma_condition_prev:.2f}) < {ma_period}일선(₩{ma_target_prev:.2f})")
+                        self.logger.info(f"- 전전{period_unit}: {condition_period}{period_unit}선(₩{ma_condition_prev2:.2f}) > {ma_period}{period_unit}선(₩{ma_target_prev2:.2f})")
+                        self.logger.info(f"- 전{period_unit}: {condition_period}{period_unit}선(₩{ma_condition_prev:.2f}) < {ma_period}{period_unit}선(₩{ma_target_prev:.2f})")
                     
                     return dead_cross, ma_target_prev
                     
@@ -746,280 +902,17 @@ class KRTrader(BaseTrader):
             
             self.logger.info("매수 조건 체크 시작")
             
+            # 개별 종목 매수 조건 체크
             for _, row in self.individual_stocks.iterrows():
-                stock_code = row['종목코드']
-                stock_name = row['종목명']
-                ma_period = int(row['매수기준'])
-                allocation_ratio = float(row['배분비율']) / 100
-                
-                # 이미 보유 중인 종목은 스킵
-                if stock_code in holdings:
-                    self.logger.info(f"{stock_name}({stock_code}) - 이미 보유 중")
-                    continue
-                    
-                # 당일 매도한 종목은 스킵
-                if self.is_sold_today(stock_code):
-                    self.logger.info(f"{stock_name}({stock_code}) - 당일 매도 종목 재매수 제한")
-                    continue
-                
-                # 트레일링 스탑으로 매도된 종목 체크
-                trailing_stop_price = self.get_trailing_stop_sell_price(stock_code)
-                if trailing_stop_price is not None:
-                    # 현재가 및 20일 이평선 조회
-                    price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
-                    if not price_data:
-                        self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
-                        continue
-                    
-                    current_price = float(price_data['output']['stck_prpr'])
-                    prev_close = float(price_data['output']['stck_sdpr'])
-                    
-                    # 20일 이평선 계산
-                    ma20_values = self.calculate_ma(stock_code, 20, "D")
-                    if ma20_values is None:
-                        self.logger.error(f"{stock_name}({stock_code}) - 20일 이평선 계산 실패")
-                        continue
-                    
-                    ma20_value = ma20_values[1]  # 전일 20일 이평선
-                    
-                    # 트레일링 스탑 매도 후 재매수 조건 확인
-                    # 1. 20일 이평선 이하로 내려갔다가 다시 매수 조건을 충족하는 경우
-                    # 2. 계속 20일 이평선 위에 있지만, 매도가 이상으로 상승하는 경우
-                    
-                    # 매수 조건 체크 (매수 조건이 충족되는지 확인)
-                    ma_period = int(row['매수기준'])
-                    ma_condition = row.get('매수조건', '종가')
-                    period_div_code = row.get('매수기준2', '일')
-                    period_div_code = "D" if period_div_code == "일" else "W"
-                    is_buy, _ = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
-                    
-                    # 첫 번째 조건: 20일 이평선 이하로 내려갔다가 다시 매수 조건을 충족
-                    went_below_ma20 = prev_close <= ma20_value
-                    
-                    # 두 번째 조건: 계속 20일 이평선 위에 있지만, 매도가 이상으로 상승
-                    above_ma20_and_higher_price = (prev_close > ma20_value) and (current_price >= trailing_stop_price)
-                    
-                    if is_buy and (went_below_ma20 or above_ma20_and_higher_price):
-                        if went_below_ma20:
-                            msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 후 재매수 가능"
-                            msg += f"\n- 조건: 20일 이평선({ma20_value:,}원) 이하로 내려갔다가 매수 조건 충족"
-                            self.logger.info(msg)
-                        else:
-                            msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 후 재매수 가능"
-                            msg += f"\n- 조건: 현재가({current_price:,}원)가 트레일링 스탑 매도가({trailing_stop_price:,}원) 이상"
-                            self.logger.info(msg)
-                    else:
-                        reasons = []
-                        if not is_buy:
-                            reasons.append("매수 조건 미충족")
-                        if not went_below_ma20 and not above_ma20_and_higher_price:
-                            reasons.append("20일선 아래로 내려가지 않음 & 매도가 이상으로 상승하지 않음")
-                        
-                        msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 종목 재매수 제한"
-                        msg += f"\n- 현재가: {current_price:,}원, 20일 이평선: {ma20_value:,}원, 매도가: {trailing_stop_price:,}원"
-                        msg += f"\n- 사유: {', '.join(reasons)}"
-                        self.logger.info(msg)
-                        continue
-                
-                # 매수 기간 체크 (설정된 경우)
-                if 'buy_start_date' in row and 'buy_end_date' in row:
-                    if not self._is_within_buy_period(row):
-                        self.logger.info(f"{stock_name}({stock_code}) - 매수 기간이 아님")
-                        continue
-                
-                # 현재가 조회
-                price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
-                if not price_data:
-                    self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
-                    continue
-                
-                current_price = float(price_data['output']['stck_prpr'])
-                prev_close = float(price_data['output']['stck_sdpr'])
-                
-                # 매수 조건 체크 (개별 종목은 일간 데이터 사용)
-                ma_period = int(row['매수기준'])
-                ma_condition = row.get('매수조건', '종가')  # 기본값은 '종가'
-                period_div_code = row.get('매수기준2', '일')  # 매수기준2에 따른 일/주 구분
-                period_div_code = "D" if period_div_code == "일" else "W"  # 일/주 구분
-                is_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
-                
-                if is_buy:
-                    buy_msg = f"{stock_name}({stock_code}) - 매수 조건 충족"
-                    period_unit = "일선" if period_div_code == "D" else "주선"
-                    if ma_condition == "종가":
-                        buy_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}{period_unit}({ma_value:,.0f}원)을 상향돌파"
-                    else:
-                        buy_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 골든크로스"
-                    self.logger.info(buy_msg)
-                    
-                    # 매수 금액 계산 (현금 * 배분비율)
-                    buy_amount = cash * allocation_ratio
-                    
-                    # 매수 수량 계산 (매수금액 / 현재가)
-                    buy_quantity = int(buy_amount / current_price)
-                    
-                    if buy_quantity > 0:
-                        individual_candidates.append({
-                            'code': stock_code,
-                            'name': stock_name,
-                            'quantity': buy_quantity,
-                            'price': current_price,
-                            'amount': buy_quantity * current_price,
-                            'allocation_ratio': allocation_ratio,
-                            'ma_period': ma_period,
-                            'ma_value': ma_value,
-                            'prev_close': prev_close,
-                            'ma_condition': ma_condition,
-                            'type': 'individual'
-                        })
-                    else:
-                        self.logger.info(f"{stock_name}({stock_code}) - 추가 매수 수량이 0 또는 음수")
-                else:
-                    if ma_value:
-                        miss_msg = f"{stock_name}({stock_code}) - 매수 조건 미충족"
-                        period_unit = "일선" if period_div_code == "D" else "주선"
-                        if ma_condition == "종가":
-                            miss_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}{period_unit}({ma_value:,.0f}원)을 상향돌파하지 않음"
-                        else:
-                            miss_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 골든크로스하지 않음"
-                        self.logger.info(miss_msg)
-                    else:
-                        self.logger.info(f"{stock_name}({stock_code}) - 이동평균 계산 실패")
+                candidates = self._check_stock_buy_condition(row, holdings, cash, 'individual')
+                if candidates:
+                    individual_candidates.extend(candidates)
             
             # POOL 종목 매수 조건 체크
             for _, row in self.pool_stocks.iterrows():
-                stock_code = row['종목코드']
-                stock_name = row['종목명']
-                ma_period = int(row['매수기준'])
-                allocation_ratio = float(row['배분비율']) / 100
-                
-                # 이미 보유 중인 종목은 스킵
-                if stock_code in holdings:
-                    self.logger.info(f"{stock_name}({stock_code}) - 이미 보유 중")
-                    continue
-                    
-                # 당일 매도한 종목은 스킵
-                if self.is_sold_today(stock_code):
-                    self.logger.info(f"{stock_name}({stock_code}) - 당일 매도 종목 재매수 제한")
-                    continue
-                
-                # 트레일링 스탑으로 매도된 종목 체크
-                trailing_stop_price = self.get_trailing_stop_sell_price(stock_code)
-                if trailing_stop_price is not None:
-                    # 현재가 및 20일 이평선 조회
-                    price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
-                    if not price_data:
-                        self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
-                        continue
-                    
-                    current_price = float(price_data['output']['stck_prpr'])
-                    prev_close = float(price_data['output']['stck_sdpr'])
-                    
-                    # 20일 이평선 계산
-                    ma20_values = self.calculate_ma(stock_code, 20, "D")
-                    if ma20_values is None:
-                        self.logger.error(f"{stock_name}({stock_code}) - 20일 이평선 계산 실패")
-                        continue
-                    
-                    ma20_value = ma20_values[1]  # 전일 20일 이평선
-                    
-                    # 트레일링 스탑 매도 후 재매수 조건 확인
-                    # 1. 20일 이평선 이하로 내려갔다가 다시 매수 조건을 충족하는 경우
-                    # 2. 계속 20일 이평선 위에 있지만, 매도가 이상으로 상승하는 경우
-                    
-                    # 매수 조건 체크 (매수 조건이 충족되는지 확인)
-                    ma_period = int(row['매수기준'])
-                    ma_condition = row.get('매수조건', '종가')
-                    period_div_code = row.get('매수기준2', '일')
-                    period_div_code = "D" if period_div_code == "일" else "W"
-                    is_buy, _ = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
-                    
-                    # 첫 번째 조건: 20일 이평선 이하로 내려갔다가 다시 매수 조건을 충족
-                    went_below_ma20 = prev_close <= ma20_value
-                    
-                    # 두 번째 조건: 계속 20일 이평선 위에 있지만, 매도가 이상으로 상승
-                    above_ma20_and_higher_price = (prev_close > ma20_value) and (current_price >= trailing_stop_price)
-                    
-                    if is_buy and (went_below_ma20 or above_ma20_and_higher_price):
-                        if went_below_ma20:
-                            msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 후 재매수 가능"
-                            msg += f"\n- 조건: 20일 이평선({ma20_value:,}원) 이하로 내려갔다가 매수 조건 충족"
-                            self.logger.info(msg)
-                        else:
-                            msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 후 재매수 가능"
-                            msg += f"\n- 조건: 현재가({current_price:,}원)가 트레일링 스탑 매도가({trailing_stop_price:,}원) 이상"
-                            self.logger.info(msg)
-                    else:
-                        reasons = []
-                        if not is_buy:
-                            reasons.append("매수 조건 미충족")
-                        if not went_below_ma20 and not above_ma20_and_higher_price:
-                            reasons.append("20일선 아래로 내려가지 않음 & 매도가 이상으로 상승하지 않음")
-                        
-                        msg = f"{stock_name}({stock_code}) - 트레일링 스탑 매도 종목 재매수 제한"
-                        msg += f"\n- 현재가: {current_price:,}원, 20일 이평선: {ma20_value:,}원, 매도가: {trailing_stop_price:,}원"
-                        msg += f"\n- 사유: {', '.join(reasons)}"
-                        self.logger.info(msg)
-                        continue
-                
-                # 현재가 조회
-                price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
-                if not price_data:
-                    self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
-                    continue
-                
-                current_price = float(price_data['output']['stck_prpr'])
-                prev_close = float(price_data['output']['stck_sdpr'])
-                
-                # 매수 조건 체크 (POOL 종목은 주간 데이터 사용)
-                ma_period = int(row['매수기준'])
-                ma_condition = row.get('매수조건', '종가')  # 기본값은 '종가'
-                period_div_code = row.get('매수기준2', '일')  # 매수기준2에 따른 일/주 구분
-                period_div_code = "D" if period_div_code == "일" else "W"  # 일/주 구분
-                is_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
-                
-                if is_buy:
-                    buy_msg = f"{stock_name}({stock_code}) - 매수 조건 충족"
-                    period_unit = "일선" if period_div_code == "D" else "주선"
-                    if ma_condition == "종가":
-                        buy_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}{period_unit}({ma_value:,.0f}원)을 상향돌파"
-                    else:
-                        buy_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 골든크로스"
-                    self.logger.info(buy_msg)
-                    
-                    # 매수 금액 계산 (현금 * 배분비율)
-                    buy_amount = cash * allocation_ratio
-                    
-                    # 매수 수량 계산 (매수금액 / 현재가)
-                    buy_quantity = int(buy_amount / current_price)
-                    
-                    if buy_quantity > 0:
-                        pool_candidates.append({
-                            'code': stock_code,
-                            'name': stock_name,
-                            'quantity': buy_quantity,
-                            'price': current_price,
-                            'amount': buy_quantity * current_price,
-                            'allocation_ratio': allocation_ratio,
-                            'ma_period': ma_period,
-                            'ma_value': ma_value,
-                            'prev_close': prev_close,
-                            'ma_condition': ma_condition,
-                            'type': 'pool'
-                        })
-                    else:
-                        self.logger.info(f"{stock_name}({stock_code}) - 추가 매수 수량이 0 또는 음수")
-                else:
-                    if ma_value:
-                        miss_msg = f"{stock_name}({stock_code}) - 매수 조건 미충족"
-                        period_unit = "일선" if period_div_code == "D" else "주선"
-                        if ma_condition == "종가":
-                            miss_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}{period_unit}({ma_value:,.0f}원)을 상향돌파하지 않음"
-                        else:
-                            miss_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 골든크로스하지 않음"
-                        self.logger.info(miss_msg)
-                    else:
-                        self.logger.info(f"{stock_name}({stock_code}) - 이동평균 계산 실패")
+                candidates = self._check_stock_buy_condition(row, holdings, cash, 'pool')
+                if candidates:
+                    pool_candidates.extend(candidates)
             
             # 개별 종목을 우선 처리하고, 그 다음 POOL 종목 처리
             buy_candidates = individual_candidates + pool_candidates
@@ -1151,19 +1044,23 @@ class KRTrader(BaseTrader):
                     
                     # 거래 내역 저장
                     if candidate['type'] == 'individual':
-                        period_unit = "일선"
                         period_div_code = "D"
+                        period_unit = "일"
                     else:
-                        period_unit = "주선"
                         period_div_code = "W"
+                        period_unit = "주"
                     
                     ma_condition = candidate.get('ma_condition', '종가')
                     
                     reason = ""
                     if ma_condition == "종가":
-                        reason = f"{ma_period}{period_unit} 매수 조건 충족 (전일 종가 {prev_close:,.0f}원 > MA {ma_value:,.0f}원)"
+                        reason = f"{ma_period}{period_unit}선 매수 조건 충족 (전일 종가 {prev_close:,.0f}원 > MA {ma_value:,.0f}원)"
+                    elif ma_condition == "정상매도후재매수":
+                        reason = f"정상 매도 후 재매수 조건 충족 (전일 종가 {prev_close:,.0f}원 > 이평선, 현재가 > 직전 정상 매도가)"
+                    elif ma_condition == "트레일링스탑매도후재매수":
+                        reason = f"트레일링 스탑 매도 후 재매수 조건 충족 (매수 조건 충족 & 매도가 이상으로 상승)"
                     else:
-                        reason = f"{ma_condition}{period_unit}과 {ma_period}{period_unit}의 골든크로스 발생"
+                        reason = f"{ma_condition}{period_unit}선과 {ma_period}{period_unit}선의 골든크로스 발생"
                     
                     trade_data = {
                         "trade_type": "BUY",
@@ -1201,6 +1098,252 @@ class KRTrader(BaseTrader):
         except Exception as e:
             self.logger.error(f"매수 주문 실행 중 오류 발생: {str(e)}")
             raise
+    
+    def _check_stock_buy_condition(self, row, holdings, cash, stock_type):
+        """종목의 매수 조건을 확인합니다.
+        
+        Args:
+            row: 종목 정보 행
+            holdings: 보유 종목 정보
+            cash: 사용 가능한 현금
+            stock_type: 종목 타입 ('individual' 또는 'pool')
+            
+        Returns:
+            list: 매수 후보 리스트
+        """
+        candidates = []
+        stock_code = row['종목코드']
+        stock_name = row['종목명']
+        ma_period = int(row['매수기준'])
+        allocation_ratio = float(row['배분비율']) / 100
+        
+        # 매수 기간 체크 (설정된 경우)
+        if 'buy_start_date' in row and 'buy_end_date' in row:
+            if not self._is_within_buy_period(row):
+                self.logger.info(f"{stock_name}({stock_code}) - 매수 기간이 아님")
+                return candidates
+        
+        # 이미 보유 중인 종목은 스킵
+        if stock_code in holdings:
+            self.logger.info(f"{stock_name}({stock_code}) - 이미 보유 중")
+            return candidates
+            
+        # 당일 매도한 종목은 스킵
+        if self.is_sold_today(stock_code):
+            self.logger.info(f"{stock_name}({stock_code}) - 당일 매도 종목 재매수 제한")
+            return candidates
+        
+        # 매수 조건 관련 설정값 가져오기
+        ma_period = int(row['매수기준'])
+        ma_condition = row.get('매수조건', '종가')
+        period_div_code_raw = row.get('매수기준2', '일')
+        period_div_code = "D" if period_div_code_raw == "일" else "W"
+        period_unit = "일" if period_div_code == "D" else "주"
+        
+        # 현재가 조회
+        price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
+        if not price_data:
+            self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
+            return candidates
+        
+        current_price = float(price_data['output']['stck_prpr'])
+        prev_close = float(price_data['output']['stck_sdpr'])
+        
+        # 기준 이평선 계산 (매수기준에 지정된 이평선)
+        ma_values = self.calculate_ma(stock_code, ma_period, period_div_code)
+        if ma_values is None:
+            self.logger.error(f"{stock_name}({stock_code}) - {ma_period}{period_unit}선 계산 실패")
+            return candidates
+        
+        ma_prev2, ma_prev = ma_values  # 전전일/전전주, 전일/전주 기준 이평선 값
+        
+        # 트레일링 스탑으로 매도된 종목 체크
+        trailing_stop_price = self.get_trailing_stop_sell_price(stock_code)
+        if trailing_stop_price is not None:
+            self.logger.info(f"{stock_name}({stock_code}) - 트레일링 스탑 매도 이력 있음 (매도가: {trailing_stop_price:,}원)")
+            
+            # TS 매도 이후 이평선 이탈 여부 확인
+            ts_sell_date = self.trade_history.get_last_ts_sell_date(stock_code)
+            if ts_sell_date is None:
+                self.logger.error(f"{stock_name}({stock_code}) - TS 매도 날짜 조회 실패")
+                return candidates
+            
+            self.logger.info(f"{stock_name}({stock_code}) - 마지막 TS 매도 날짜: {ts_sell_date}")
+            
+            # 현재 종가가 이평선 위에 있는지 확인
+            is_above_ma = prev_close > ma_prev
+            
+            if is_above_ma:
+                # 이평선 위에 있는 경우 추가 조건 체크
+                
+                # 조건 1: 전일 종가가 TS 매도가보다 큰지 확인
+                is_above_ts_price = prev_close > trailing_stop_price
+                if is_above_ts_price:
+                    self.logger.info(f"{stock_name}({stock_code}) - 전일 종가({prev_close:,.0f}원)가 TS 매도가({trailing_stop_price:,.0f}원)보다 크므로 매수조건 충족 여부와 관계없이 즉시 재매수")
+                    
+                    # 즉시 재매수 후보 추가 (매수 조건을 보지 않고 즉시 추가)
+                    buy_amount = cash * allocation_ratio
+                    buy_quantity = int(buy_amount / current_price)
+                    
+                    if buy_quantity > 0:
+                        candidates.append({
+                            'code': stock_code,
+                            'name': stock_name,
+                            'quantity': buy_quantity,
+                            'price': current_price,
+                            'amount': buy_quantity * current_price,
+                            'allocation_ratio': allocation_ratio,
+                            'ma_period': ma_period,
+                            'ma_value': ma_prev,
+                            'prev_close': prev_close,
+                            'ma_condition': "트레일링스탑매도후재매수",
+                            'type': stock_type
+                        })
+                        # 바로 반환하여 다른 조건 확인하지 않음
+                        return candidates
+                else:
+                    # 조건 2: TS 매도 이후 이평선을 한 번이라도 이탈했는지 확인
+                    has_crossed_below = self._check_ma_cross_below_since_ts_sell(stock_code, ts_sell_date, ma_period, period_div_code)
+                    
+                    if not has_crossed_below:
+                        # 두 조건 모두 충족하지 않으면 재매수 제한
+                        self.logger.info(f"{stock_name}({stock_code}) - TS 매도 이후 {ma_period}{period_unit}선 이탈 이력 없고, 전일 종가가 TS 매도가보다 작아 재매수 제한")
+                        return candidates
+                    else:
+                        # 이탈 이력이 있으면 매수 조건 확인 후 재매수 가능 (다음 단계로 진행)
+                        self.logger.info(f"{stock_name}({stock_code}) - TS 매도 이후 {ma_period}{period_unit}선 이탈 이력 있어 매수 조건 확인 후 재매수 가능")
+            else:
+                # 현재 이평선 아래에 있으면 매수 조건에 따라 결정 (다음 단계로 넘김)
+                self.logger.info(f"{stock_name}({stock_code}) - 현재 {ma_period}{period_unit}선 아래에 있음, 매수 조건에 따라 결정")
+        
+        # 정상 매도된 종목 체크 (정상매도된 종목 재매수 조건)
+        last_normal_sell_price = self.get_last_normal_sell_price(stock_code)
+        if last_normal_sell_price is not None:
+            # 현재가 조회
+            price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
+            if not price_data:
+                self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
+                return candidates
+            
+            current_price = float(price_data['output']['stck_prpr'])
+            prev_close = float(price_data['output']['stck_sdpr'])
+            
+            # 매수 조건 체크
+            ma_period = int(row['매수기준'])
+            ma_condition = row.get('매수조건', '종가')
+            
+            # 매수기준2에 따른 일/주 구분 - 명확하게 처리
+            period_div_code_raw = row.get('매수기준2', '일')
+            period_div_code = "D" if period_div_code_raw == "일" else "W"
+            period_unit = "일" if period_div_code == "D" else "주"
+            
+            # 매수기준 이평선 계산
+            ma_values = self.calculate_ma(stock_code, ma_period, period_div_code)
+            if ma_values is None:
+                self.logger.error(f"{stock_name}({stock_code}) - {ma_period}{period_unit}선 계산 실패")
+                return candidates
+            
+            ma_value = ma_values[1]  # 전일 이동평균값
+            
+            # 수정된 조건: 전일 종가가 이평선 위에 있고 직전 정상 매도가보다 높으면 즉시 재매수
+            above_ma = prev_close > ma_value
+            higher_than_last_sell = prev_close > last_normal_sell_price
+            
+            if above_ma and higher_than_last_sell:
+                msg = f"{stock_name}({stock_code}) - 정상 매도 후 재매수 조건 충족"
+                msg += f"\n- 전일 종가({prev_close:,}원)가 {ma_period}{period_unit}선({ma_value:,}원) 위에 있고,"
+                msg += f"\n- 전일 종가({prev_close:,}원)가 직전 정상 매도가({last_normal_sell_price:,}원)보다 높음"
+                self.logger.info(msg)
+                
+                # 매수 금액 계산 (현금 * 배분비율)
+                buy_amount = cash * allocation_ratio
+                
+                # 매수 수량 계산 (매수금액 / 현재가)
+                buy_quantity = int(buy_amount / current_price)
+                
+                if buy_quantity > 0:
+                    candidates.append({
+                        'code': stock_code,
+                        'name': stock_name,
+                        'quantity': buy_quantity,
+                        'price': current_price,
+                        'amount': buy_quantity * current_price,
+                        'allocation_ratio': allocation_ratio,
+                        'ma_period': ma_period,
+                        'ma_value': ma_value,
+                        'prev_close': prev_close,
+                        'ma_condition': "정상매도후재매수",
+                        'type': stock_type
+                    })
+                    self.logger.info(f"{stock_name}({stock_code}) - 정상 매도 후 재매수 후보에 추가됨 (매수조건 충족 여부와 관계없이)")
+                else:
+                    self.logger.info(f"{stock_name}({stock_code}) - 추가 매수 수량이 0 또는 음수")
+                
+                # 다른 매수 조건 확인 스킵
+                return candidates
+        
+        # 현재가 조회
+        price_data = self._retry_api_call(self.kr_api.get_stock_price, stock_code)
+        if not price_data:
+            self.logger.error(f"{stock_name}({stock_code}) - 현재가 조회 실패")
+            return candidates
+        
+        current_price = float(price_data['output']['stck_prpr'])
+        prev_close = float(price_data['output']['stck_sdpr'])
+        
+        # 매수 조건 체크
+        ma_period = int(row['매수기준'])
+        ma_condition = row.get('매수조건', '종가')  # 기본값은 '종가'
+        
+        # 매수기준2에 따른 일/주 구분 - 명확하게 처리
+        period_div_code_raw = row.get('매수기준2', '일')
+        period_div_code = "D" if period_div_code_raw == "일" else "W"
+        period_unit = "일" if period_div_code == "D" else "주"
+        
+        is_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
+        
+        if is_buy:
+            buy_msg = f"{stock_name}({stock_code}) - 매수 조건 충족"
+            if ma_condition == "종가":
+                buy_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}{period_unit}선({ma_value:,.0f}원)을 상향돌파"
+            else:
+                buy_msg += f": {ma_condition}{period_unit}선이 {ma_period}{period_unit}선을 골든크로스"
+            self.logger.info(buy_msg)
+            
+            # 매수 금액 계산 (현금 * 배분비율)
+            buy_amount = cash * allocation_ratio
+            
+            # 매수 수량 계산 (매수금액 / 현재가)
+            buy_quantity = int(buy_amount / current_price)
+            
+            if buy_quantity > 0:
+                candidates.append({
+                    'code': stock_code,
+                    'name': stock_name,
+                    'quantity': buy_quantity,
+                    'price': current_price,
+                    'amount': buy_quantity * current_price,
+                    'allocation_ratio': allocation_ratio,
+                    'ma_period': ma_period,
+                    'ma_value': ma_value,
+                    'prev_close': prev_close,
+                    'ma_condition': ma_condition,
+                    'type': stock_type
+                })
+            else:
+                self.logger.info(f"{stock_name}({stock_code}) - 추가 매수 수량이 0 또는 음수")
+        else:
+            if ma_value:
+                miss_msg = f"{stock_name}({stock_code}) - 매수 조건 미충족"
+                if ma_condition == "종가":
+                    miss_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}{period_unit}선({ma_value:,.0f}원)을 상향돌파하지 않음"
+                else:
+                    miss_msg += f": {ma_condition}{period_unit}선이 {ma_period}{period_unit}선을 골든크로스하지 않음"
+                self.logger.info(miss_msg)
+            else:
+                self.logger.info(f"{stock_name}({stock_code}) - 이동평균 계산 실패")
+                
+        return candidates
     
     def _check_stop_conditions_for_stock(self, holding: Dict, current_price: float) -> bool:
         """개별 종목의 스탑로스와 트레일링 스탑 조건을 체크합니다."""
@@ -1509,15 +1652,126 @@ class KRTrader(BaseTrader):
             Optional[float]: 트레일링 스탑 매도 가격, 없으면 None
         """
         try:
-            # 거래 내역에서 해당 종목의 트레일링 스탑 매도 내역 조회
-            trailing_stop_trades = self.trade_history.get_trades_by_type_and_code("TRAILING_STOP", stock_code)
+            # 거래 내역에서 해당 종목의 모든 매도 내역 조회
+            all_trades = self.trade_history.get_trades_by_code(stock_code)
             
-            if trailing_stop_trades and len(trailing_stop_trades) > 0:
-                # 가장 최근 트레일링 스탑 매도 가격 반환
-                latest_trade = trailing_stop_trades[-1]
-                return float(latest_trade.get("price", 0))
+            if not all_trades or len(all_trades) == 0:
+                return None
+                
+            # 가장 최근 거래 확인
+            latest_trade = all_trades[-1]
             
-            return None
+            # 마지막 거래가 정상 매도인 경우 None 반환
+            if latest_trade.get("trade_type") != "TRAILING_STOP":
+                return None
+                
+            # 마지막 거래가 트레일링 스탑 매도인 경우 가격 반환
+            return float(latest_trade.get("price", 0))
+            
         except Exception as e:
             self.logger.error(f"트레일링 스탑 매도 가격 조회 중 오류 발생 ({stock_code}): {str(e)}")
-            return None 
+            return None
+            
+    def get_last_normal_sell_price(self, stock_code: str) -> Optional[float]:
+        """정상적인 매도 조건으로 매도된 종목의 마지막 매도 가격을 조회합니다.
+        스탑로스나 트레일링 스탑으로 인한 매도는 제외하고, 사용자가 설정한 정상 매도일 경우만 반환합니다.
+        
+        Args:
+            stock_code (str): 종목 코드
+            
+        Returns:
+            Optional[float]: 정상 매도 가격, 없으면 None
+        """
+        try:
+            # 거래 내역에서 해당 종목의 모든 매도 내역 조회
+            all_trades = self.trade_history.get_trades_by_code(stock_code)
+            
+            if not all_trades or len(all_trades) == 0:
+                return None
+                
+            # 가장 최근 거래 확인
+            latest_trade = all_trades[-1]
+            
+            # 마지막 거래가 정상 매도인 경우 None 반환
+            if latest_trade.get("trade_type") != "SELL":
+                return None
+                
+            # 마지막 거래가 정상상 매도인 경우 가격 반환
+            return float(latest_trade.get("price", 0))
+            
+        except Exception as e:
+            self.logger.error(f"정상 매도 가격 조회 중 오류 발생 ({stock_code}): {str(e)}")
+            return None
+
+    def _check_ma_cross_below_since_ts_sell(self, stock_code: str, ts_sell_date: str, ma_period: int, period_div_code: str) -> bool:
+        """TS 매도 이후 종목이 이평선을 한 번이라도 이탈했는지 확인합니다.
+        
+        Args:
+            stock_code (str): 종목 코드
+            ts_sell_date (str): TS 매도 날짜 (YYYY-MM-DD 형식)
+            ma_period (int): 이동평균 기간
+            period_div_code (str): 기간 구분 코드 (D: 일봉, W: 주봉)
+            
+        Returns:
+            bool: 이평선 이탈 이력 여부 (True: 이탈했음, False: 이탈하지 않음)
+        """
+        try:
+            # TS 매도 이후의 시세 데이터 조회
+            end_date = datetime.now().strftime("%Y%m%d")
+            sell_date_obj = datetime.strptime(ts_sell_date, "%Y-%m-%d")
+            start_date = sell_date_obj.strftime("%Y%m%d")
+            
+            df = self.kr_api.get_daily_price(stock_code, start_date, end_date, period_div_code)
+            if df is None or len(df) < 2:  # 매도일 포함해서 최소 2일 이상 필요
+                self.logger.error(f"{stock_code} - TS 매도 이후 시세 데이터 조회 실패")
+                return False
+            
+            # 날짜 기준으로 정렬 (오래된 순)
+            if 'stck_bsop_date' in df.columns:
+                df = df.sort_values('stck_bsop_date', ascending=True)
+            
+            # TS 매도일 이후 데이터만 필터링 (매도일 제외)
+            sell_date_formatted = sell_date_obj.strftime("%Y%m%d")
+            df_after_sell = df[df['stck_bsop_date'] > sell_date_formatted]
+            
+            if len(df_after_sell) == 0:
+                self.logger.info(f"{stock_code} - TS 매도 이후 시세 데이터가 없습니다")
+                return False
+            
+            # 각 날짜에 대해 이동평균 계산 및 종가와 비교
+            for i, row_data in df_after_sell.iterrows():
+                date = row_data['stck_bsop_date']
+                close = float(row_data['stck_clpr'])
+                
+                # 해당 날짜의 이동평균 계산
+                end_date_for_ma = date
+                days_for_ma = ma_period * 2  # 충분한 데이터 확보
+                start_date_for_ma = (datetime.strptime(end_date_for_ma, "%Y%m%d") - timedelta(days=days_for_ma)).strftime("%Y%m%d")
+                
+                df_for_ma = self.kr_api.get_daily_price(stock_code, start_date_for_ma, end_date_for_ma, period_div_code)
+                if df_for_ma is None or len(df_for_ma) < ma_period:
+                    continue
+                
+                # 날짜 정렬
+                if 'stck_bsop_date' in df_for_ma.columns:
+                    df_for_ma = df_for_ma.sort_values('stck_bsop_date', ascending=True)
+                
+                # 이동평균 계산
+                ma_series = df_for_ma['stck_clpr'].astype(float).rolling(window=ma_period).mean()
+                if len(ma_series) < 1 or pd.isna(ma_series.iloc[-1]):
+                    continue
+                
+                ma_value = ma_series.iloc[-1]
+                
+                # 종가가 이동평균보다 낮으면 이탈 확인
+                if close < ma_value:
+                    self.logger.info(f"{stock_code} - {date} 종가({close:,.0f}원)가 {ma_period}일선({ma_value:,.0f}원) 아래로 이탈 확인")
+                    return True
+            
+            # 이탈 이력 없음
+            self.logger.info(f"{stock_code} - TS 매도 이후 이평선 이탈 이력 없음")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"{stock_code} - 이평선 이탈 확인 중 오류 발생: {str(e)}")
+            return False
