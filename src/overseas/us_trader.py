@@ -1170,6 +1170,31 @@ class USTrader(BaseTrader):
             ma_condition = row.get('매수조건', '종가')  # 기본값은 '종가'
             allocation_ratio = float(row['배분비율']) / 100 if row['배분비율'] and str(row['배분비율']).strip() != '' else 0.1
             
+            # 종목 유형에 따라 일간/주간 데이터 사용
+            is_individual = any(s['종목코드'] == stock_code.split('.')[0] for _, s in self.individual_stocks.iterrows())
+            
+            # 매수기준2의 값에 따라 일봉/주봉 결정 - 함수 상단에서 한번만 결정
+            if is_individual:
+                # 개별 종목인 경우 해당 종목 찾기
+                individual_match = self.individual_stocks[self.individual_stocks['종목코드'] == stock_code.split('.')[0]]
+                if not individual_match.empty:
+                    period_div_code_raw = individual_match.iloc[0].get('매수기준2', '일')
+                    period_div_code = "D" if period_div_code_raw == "일" else "W"
+                    period_unit = "일" if period_div_code == "D" else "주"
+                else:
+                    period_div_code = "D"  # 찾지 못한 경우 기본값
+                    period_unit = "일"
+            else:
+                # POOL 종목인 경우 해당 종목 찾기
+                pool_match = self.pool_stocks[self.pool_stocks['종목코드'] == stock_code.split('.')[0]]
+                if not pool_match.empty:
+                    period_div_code_raw = pool_match.iloc[0].get('매수기준2', '주')
+                    period_div_code = "D" if period_div_code_raw == "일" else "W"
+                    period_unit = "일" if period_div_code == "D" else "주"
+                else:
+                    period_div_code = "W"  # 찾지 못한 경우 기본값 (POOL은 주간이 기본)
+                    period_unit = "주"
+            
             # 현재가 조회 (재시도 로직 적용)
             current_price_data = self._retry_api_call(self.us_api.get_stock_price, stock_code)
             if current_price_data is None:
@@ -1201,30 +1226,6 @@ class USTrader(BaseTrader):
                     return
                 
                 self.logger.info(f"{row['종목명']}({stock_code}) - 마지막 TS 매도 날짜: {ts_sell_date}")
-                
-                # 종목 유형에 따라 일간/주간 데이터 사용
-                is_individual = any(s['종목코드'] == stock_code.split('.')[0] for _, s in self.individual_stocks.iterrows())
-                # 매수기준2의 값에 따라 일봉/주봉 결정
-                if is_individual:
-                    # 개별 종목인 경우 해당 종목 찾기
-                    individual_match = self.individual_stocks[self.individual_stocks['종목코드'] == stock_code.split('.')[0]]
-                    if not individual_match.empty:
-                        period_div_code_raw = individual_match.iloc[0].get('매수기준2', '일')
-                        period_div_code = "D" if period_div_code_raw == "일" else "W"
-                        period_unit = "일" if period_div_code == "D" else "주"
-                    else:
-                        period_div_code = "D"  # 찾지 못한 경우 기본값
-                        period_unit = "일"
-                else:
-                    # POOL 종목인 경우 해당 종목 찾기
-                    pool_match = self.pool_stocks[self.pool_stocks['종목코드'] == stock_code.split('.')[0]]
-                    if not pool_match.empty:
-                        period_div_code_raw = pool_match.iloc[0].get('매수기준2', '주')
-                        period_div_code = "D" if period_div_code_raw == "일" else "W"
-                        period_unit = "일" if period_div_code == "D" else "주"
-                    else:
-                        period_div_code = "D"  # 찾지 못한 경우 기본값
-                        period_unit = "일"
                 
                 # 매수 조건 체크를 통해 정확한 이평선 값 얻기
                 should_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
@@ -1357,26 +1358,6 @@ class USTrader(BaseTrader):
                             return
                         else:
                             self.logger.info(f"{row['종목명']}({stock_code}) - 추가 매수 수량이 0 또는 음수")
-            
-            # 종목 유형에 따라 일간/주간 데이터 사용
-            is_individual = any(s['종목코드'] == stock_code.split('.')[0] for _, s in self.individual_stocks.iterrows())
-            # 매수기준2의 값에 따라 일봉/주봉 결정
-            if is_individual:
-                # 개별 종목인 경우 해당 종목 찾기
-                individual_match = self.individual_stocks[self.individual_stocks['종목코드'] == stock_code.split('.')[0]]
-                if not individual_match.empty:
-                    period_div_code = individual_match.iloc[0].get('매수기준2', '일')
-                    period_div_code = "D" if period_div_code == "일" else "W"
-                else:
-                    period_div_code = "D"  # 찾지 못한 경우 기본값
-            else:
-                # POOL 종목인 경우 해당 종목 찾기
-                pool_match = self.pool_stocks[self.pool_stocks['종목코드'] == stock_code.split('.')[0]]
-                if not pool_match.empty:
-                    period_div_code = pool_match.iloc[0].get('매수기준2', '주')
-                    period_div_code = "D" if period_div_code == "일" else "W"
-                else:
-                    period_div_code = "W"  # 찾지 못한 경우 기본값
             
             # 매수 조건 체크
             should_buy, ma = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
