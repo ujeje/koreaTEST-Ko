@@ -1632,7 +1632,7 @@ class USTrader(BaseTrader):
                     msg += f"\n- 매도 사유: 손실률 {loss_pct:.2f}% (스탑로스 {self.settings['stop_loss']}% 도달)"
                     msg += f"\n- 매도 금액: ${current_price * quantity:,.2f} (현재가 ${current_price:,.2f})"
                     msg += f"\n- 매수 정보: 매수단가 ${entry_price:,.2f} / 평가손익 ${(current_price - entry_price) * quantity:,.2f}"
-                    msg += f"\n- 계좌 상태: 총평가금액 ${total_assets:,.2f} / D+2예수금 ${d2_deposit:,.2f}"
+                    msg += f"\n- 계좌 상태: 총평가금액 ${total_assets:,.2f}"
                     self.logger.info(msg)
                     
                     # 거래 내역 저장
@@ -1688,9 +1688,9 @@ class USTrader(BaseTrader):
                     # 1% 이상 하락 시 메시지 출력
                     if drop_pct <= -1.0:
                         msg = f"고점 대비 하락 - {name}({stock_code})"
-                        msg += f"\n- 현재 수익률: +{((current_price - entry_price) / entry_price * 100):.1f}%"
-                        msg += f"\n- 고점 대비 하락: {drop_pct:.1f}% (고점 ${highest_price:,.2f} → 현재가 ${current_price:,.2f})"
-                        msg += f"\n- 트레일링 스탑까지: {abs(self.settings['trailing_stop'] - drop_pct):.1f}% 더 하락하면 매도"
+                        msg += f"\n- 현재 수익률: +{((current_price - entry_price) / entry_price * 100):.3f}%"
+                        msg += f"\n- 고점 대비 하락: {drop_pct:.3f}% (고점 ${highest_price:,.2f} → 현재가 ${current_price:,.2f})"
+                        msg += f"\n- 트레일링 스탑까지: {(self.settings['trailing_stop'] - drop_pct):.3f}% 더 하락하면 매도"
                         self.logger.info(msg)
                     
                     if drop_pct <= self.settings['trailing_stop']:
@@ -1700,10 +1700,10 @@ class USTrader(BaseTrader):
                         result = self._retry_api_call(self.us_api.order_stock, stock_code, "SELL", quantity)
                         if result:
                             msg = f"트레일링 스탑 매도 실행: {name} {quantity}주 (지정가)"
-                            msg += f"\n- 매도 사유: 고점 대비 하락률 {drop_pct:.2f}% (트레일링 스탑 {self.settings['trailing_stop']}% 도달)"
+                            msg += f"\n- 매도 사유: 고점 대비 하락률 {drop_pct:.3f}% (트레일링 스탑 {self.settings['trailing_stop']}% 도달)"
                             msg += f"\n- 매도 금액: ${current_price * quantity:,.2f} (현재가 ${current_price:,.2f})"
                             msg += f"\n- 매수 정보: 매수단가 ${entry_price:,.2f} / 평가손익 ${(current_price - entry_price) * quantity:,.2f}"
-                            msg += f"\n- 계좌 상태: 총평가금액 ${total_assets:,.2f} / D+2예수금 ${d2_deposit:,.2f}"
+                            msg += f"\n- 계좌 상태: 총평가금액 ${total_assets:,.2f}"
                             self.logger.info(msg)
                             
                             # 거래 내역 저장
@@ -1715,7 +1715,7 @@ class USTrader(BaseTrader):
                                 "quantity": quantity,
                                 "price": current_price,
                                 "total_amount": quantity * current_price,
-                                "reason": f"트레일링 스탑 조건 충족 (고점 ${highest_price:.2f} 대비 하락률 {drop_pct:.2f}% <= {self.settings['trailing_stop']}%)",
+                                "reason": f"트레일링 스탑 조건 충족 (고점 ${highest_price:.2f} 대비 하락률 {drop_pct:.3f}% <= {self.settings['trailing_stop']}%)",
                                 "profit_loss": (current_price - entry_price) * quantity,
                                 "profit_loss_pct": (current_price - entry_price) / entry_price * 100
                             }
@@ -1758,20 +1758,6 @@ class USTrader(BaseTrader):
                     current_price = round(float(current_price_data['output']['last']), 2)
                     stock_code = holding['ovrs_pdno']
                     stock_name = holding['ovrs_item_name']
-                    
-                    # 구글 스프레드시트에 없는 종목이더라도 stock_history에 정보 업데이트
-                    # trade_history에 stock_history 데이터 추가
-                    trade_data = {
-                        "trade_type": "USER",
-                        "trade_action": "BUY",
-                        "stock_code": stock_code,
-                        "stock_name": stock_name,
-                        "quantity": int(holding['ovrs_cblc_qty']),
-                        "price": current_price,
-                        "total_amount": current_price * int(holding['ovrs_cblc_qty']),
-                        "reason": "주식현황 업데이트"
-                    }
-                    self.trade_history.add_trade(trade_data)
                     
                     holdings_data.append([
                         stock_code,                                           # 종목코드

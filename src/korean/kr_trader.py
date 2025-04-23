@@ -1637,7 +1637,7 @@ class KRTrader(BaseTrader):
                     msg += f"\n- 매도 사유: 손실률 {loss_pct:.2f}% (스탑로스 {self.settings['stop_loss']}% 도달)"
                     msg += f"\n- 매도 금액: {current_price * quantity:,.0f}원 (현재가 {current_price:,.0f}원)"
                     msg += f"\n- 매수 정보: 매수단가 {entry_price:,.0f}원 / 평가손익 {(current_price - entry_price) * quantity:,.0f}원"
-                    msg += f"\n- 계좌 상태: 총평가금액 {total_balance:,.0f}원 / D+2예수금 {d2_deposit:,.0f}원"
+                    msg += f"\n- 계좌 상태: 총평가금액 {total_balance:,.0f}원"
                     self.logger.info(msg)
                     # 캐시 초기화하여 다음 API 호출 시 최신 정보 조회하도록 함
                     self.sold_stocks_cache_time = 0
@@ -1659,9 +1659,9 @@ class KRTrader(BaseTrader):
                 if profit_pct >= self.settings['trailing_start']:
                     if price_change_pct >= 1.0:  # 1% 이상 상승 시
                         msg = f"신고가 갱신 - {name}({stock_code})"
-                        msg += f"\n- 현재 수익률: +{profit_pct:.1f}% (목표가 {self.settings['trailing_start']}% 초과)"
-                        msg += f"\n- 고점 대비 상승: +{price_change_pct:.1f}% (이전 고점 {highest_price:,}원 → 현재가 {current_price:,}원)"
-                        msg += f"\n- 트레일링 스탑: 현재가 기준 {abs(self.settings['trailing_stop']):.1f}% 하락 시 매도"
+                        msg += f"\n- 현재 수익률: +{profit_pct:.3f}% (목표가 {self.settings['trailing_start']}% 초과)"
+                        msg += f"\n- 고점 대비 상승: +{price_change_pct:.3f}% (이전 고점 {highest_price:,}원 → 현재가 {current_price:,}원)"
+                        msg += f"\n- 트레일링 스탑: 현재가 기준 {abs(self.settings['trailing_stop']):.3f}% 하락 시 매도"
                         self.logger.info(msg)
                 
                 # 현재가를 새로운 최고가로 사용
@@ -1684,13 +1684,13 @@ class KRTrader(BaseTrader):
                     # 1% 이상 하락 시 메시지 출력
                     if drop_pct <= -1.0:
                         msg = f"고점 대비 하락 - {name}({stock_code})"
-                        msg += f"\n- 현재 수익률: +{((current_price - entry_price) / entry_price * 100):.1f}%"
-                        msg += f"\n- 고점 대비 하락: {drop_pct:.1f}% (고점 {highest_price:,}원 → 현재가 {current_price:,}원)"
-                        msg += f"\n- 트레일링 스탑: {abs(self.settings['trailing_stop'] - drop_pct):.1f}% 더 하락하면 매도"
+                        msg += f"\n- 현재 수익률: +{((current_price - entry_price) / entry_price * 100):.3f}%"
+                        msg += f"\n- 고점 대비 하락: {drop_pct:.3f}% (고점 {highest_price:,}원 → 현재가 {current_price:,}원)"
+                        msg += f"\n- 트레일링 스탑: {(self.settings['trailing_stop'] - drop_pct):.3f}% 더 하락하면 매도"
                         self.logger.info(msg)
                     
                     if drop_pct <= self.settings['trailing_stop']:
-                        trade_msg = f"트레일링 스탑 조건 성립 - {name}({stock_code}): 고점대비 하락률 {drop_pct:.2f}% <= {self.settings['trailing_stop']}%"
+                        trade_msg = f"트레일링 스탑 조건 성립 - {name}({stock_code}): 고점대비 하락률 {drop_pct:.3f}% <= {self.settings['trailing_stop']}%"
                         self.logger.info(trade_msg)
                         
                         # 트레일링 스탑 매도
@@ -1705,7 +1705,7 @@ class KRTrader(BaseTrader):
                                 "quantity": quantity,
                                 "price": current_price,
                                 "total_amount": quantity * current_price,
-                                "reason": f"트레일링 스탑 조건 충족 (고점 {highest_price:,.0f}원 대비 하락률 {drop_pct:.2f}% <= {self.settings['trailing_stop']}%)",
+                                "reason": f"트레일링 스탑 조건 충족 (고점 {highest_price:,.0f}원 대비 하락률 {drop_pct:.3f}% <= {self.settings['trailing_stop']}%)",
                                 "profit_loss": (current_price - entry_price) * quantity,
                                 "profit_loss_pct": (current_price - entry_price) / entry_price * 100
                             }
@@ -1717,10 +1717,10 @@ class KRTrader(BaseTrader):
                             d2_deposit = float(new_balance['output2'][0]['dnca_tot_amt'])
                             
                             msg = f"트레일링 스탑 매도 실행: {name} {quantity}주"
-                            msg += f"\n- 매도 사유: 고점 대비 하락률 {drop_pct:.2f}% (트레일링 스탑 {self.settings['trailing_stop']}% 도달)"
+                            msg += f"\n- 매도 사유: 고점 대비 하락률 {drop_pct:.3f}% (트레일링 스탑 {self.settings['trailing_stop']}% 도달)"
                             msg += f"\n- 매도 금액: {current_price * quantity:,.0f}원 (현재가 {current_price:,.0f}원)"
                             msg += f"\n- 매수 정보: 매수단가 {entry_price:,.0f}원 / 평가손익 {(current_price - entry_price) * quantity:,.0f}원"
-                            msg += f"\n- 계좌 상태: 총평가금액 {total_balance:,.0f}원 / D+2예수금 {d2_deposit:,.0f}원"
+                            msg += f"\n- 계좌 상태: 총평가금액 {total_balance:,.0f}원"
                             self.logger.info(msg)
                             # 캐시 초기화하여 다음 API 호출 시 최신 정보 조회하도록 함
                             self.sold_stocks_cache_time = 0
@@ -1780,20 +1780,6 @@ class KRTrader(BaseTrader):
                 if current_price_data:
                     # 현재가
                     current_price = round(float(current_price_data['output']['stck_prpr']), 2)
-                    
-                    # 구글 스프레드시트에 없는 종목이더라도 stock_history에 정보 업데이트
-                    # trade_history에 stock_history 데이터 추가
-                    trade_data = {
-                        "trade_type": "USER",
-                        "trade_action": "BUY",
-                        "stock_code": stock_code,
-                        "stock_name": holding['prdt_name'],
-                        "quantity": int(holding['ord_psbl_qty']),
-                        "price": current_price,
-                        "total_amount": current_price * int(holding['ord_psbl_qty']),
-                        "reason": "주식현황 업데이트"
-                    }
-                    self.trade_history.add_trade(trade_data)
                     
                     holdings_data.append([
                         stock_code,                                           # 종목코드
