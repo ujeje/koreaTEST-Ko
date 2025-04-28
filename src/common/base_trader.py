@@ -37,15 +37,10 @@ class BaseTrader:
         self.api_call_interval = 0.5 if self.is_paper_trading else 0.3  # 모의투자: 0.5초, 실전투자: 0.3초
         self.max_retries = 3
         
-        # 당일 매도 종목 캐시 관련 설정
-        self.sold_stocks_cache = []
-        self.sold_stocks_cache_time = 0  # 매도 종목 캐시 시간 (초 단위)
-        self.sold_stocks_cache_duration = 60  # 캐시 유효 시간 (1분)
-        
         # 디렉토리 생성
         os.makedirs('logs', exist_ok=True)
         
-        # 로거 설정sell_conditions
+        # 로거 설정
         self.logger = setup_logger(market_type, self.config)
         
     def send_discord_message(self, message: str, error: bool = False) -> None:
@@ -81,22 +76,13 @@ class BaseTrader:
     
     def get_today_sold_stocks(self) -> List[str]:
         """API를 통해 당일 매도한 종목 코드 목록을 조회합니다.
+        각 하위 클래스(KR/US)에서 해당 시장에 맞게 구현해야 합니다.
         
         Returns:
             List[str]: 당일 매도한 종목 코드 목록
         """
         # 이 메서드는 하위 클래스에서 구현해야 합니다.
         return []
-    
-    def is_sold_today(self, stock_code: str) -> bool:
-        """당일 매도 종목인지 확인합니다. API를 통해 실시간으로 확인합니다."""
-        # 캐시 유효 시간이 지났으면 API로 최신 정보 조회
-        current_time = time.time()
-        if current_time - self.sold_stocks_cache_time > self.sold_stocks_cache_duration:
-            self.sold_stocks_cache = self.get_today_sold_stocks()
-            self.sold_stocks_cache_time = current_time
-            
-        return stock_code in self.sold_stocks_cache
     
     def load_settings(self) -> None:
         """구글 스프레드시트에서 설정을 로드합니다."""

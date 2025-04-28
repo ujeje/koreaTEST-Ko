@@ -1129,7 +1129,8 @@ class KRTrader(BaseTrader):
             return candidates
             
         # 당일 매도한 종목은 스킵
-        if self.is_sold_today(stock_code):
+        sold_stocks = self.get_today_sold_stocks()
+        if stock_code in sold_stocks:
             self.logger.info(f"{stock_name}({stock_code}) - 당일 매도 종목 재매수 제한")
             return candidates
         
@@ -1536,7 +1537,7 @@ class KRTrader(BaseTrader):
                             reason = f"{ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생"
                     
                     trade_data = {
-                        "trade_type": "SELL",
+                        "trade_type": "USER" if ma_condition == "삭제됨" else "SELL",
                         "trade_action": "SELL",
                         "stock_code": stock_code,
                         "stock_name": stock_name,
@@ -1757,8 +1758,7 @@ class KRTrader(BaseTrader):
             return sold_stocks
         except Exception as e:
             self.logger.error(f"당일 매도 종목 조회 중 오류 발생: {str(e)}")
-            # 오류 발생 시 파일에 저장된 정보 반환
-            return super().get_today_sold_stocks()
+            return []  # 오류 발생 시 빈 리스트 반환
         
     def update_stock_report(self) -> None:
         """국내 주식 현황을 구글 스프레드시트에 업데이트합니다."""
@@ -1890,7 +1890,7 @@ class KRTrader(BaseTrader):
             latest_trade = all_trades[-1]
             
             # 마지막 거래가 정상 매도인 경우 None 반환
-            if latest_trade.get("trade_type") != "TRAILING_STOP":
+            if latest_trade.get("trade_type") != "TRAILING_STOP" or latest_trade.get("trade_action") != "SELL":
                 return None
                 
             # 마지막 거래가 트레일링 스탑 매도인 경우 가격 반환
@@ -1920,12 +1920,11 @@ class KRTrader(BaseTrader):
             # 가장 최근 거래 확인
             latest_trade = all_trades[-1]
             
-            # 마지막 거래가 정상 매도인 경우 None 반환
-            if latest_trade.get("trade_type") != "SELL":
-                return None
-                
-            # 마지막 거래가 정상상 매도인 경우 가격 반환
-            return float(latest_trade.get("price", 0))
+            # 마지막 거래가 정상 매도인 경우 가격 반환
+            if latest_trade.get("trade_type") == "SELL" and latest_trade.get("trade_action") == "SELL":
+                return float(latest_trade.get("price", 0))
+            
+            return None
             
         except Exception as e:
             self.logger.error(f"정상 매도 가격 조회 중 오류 발생 ({stock_code}): {str(e)}")

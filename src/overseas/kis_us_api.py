@@ -565,11 +565,11 @@ class KISUSAPIManager:
             logging.error(f"체결기준현재잔고 조회 중 오류 발생: {str(e)}")
             return None
     
-    def get_today_executed_orders(self, stock_code: str = None) -> Optional[Dict]:
+    def get_today_executed_orders(self, today: str = None) -> Optional[Dict]:
         """해외주식 당일 체결내역을 조회합니다.
         
         Args:
-            stock_code (str, optional): 종목코드 (종목코드.거래소 형식). None인 경우 전체 종목 조회.
+            today (str, optional): 조회할 날짜 (YYYYMMDD 형식). None인 경우 미국 현지 시각 기준 당일 날짜.
             
         Returns:
             Dict: 당일 체결내역 정보를 담은 딕셔너리
@@ -613,16 +613,19 @@ class KISUSAPIManager:
                 "tr_id": "VTTS3035R" if self.is_paper_trading else "TTTS3035R"  # 모의/실전 구분
             }
             
+            # 미국 현지 시각 기준 당일 날짜 사용 (today 파라미터 무시)
+            us_today = datetime.now(self.us_timezone).strftime("%Y%m%d")
+            
             # 요청 파라미터
             params = {
                 "CANO": self.account_no[:8],
                 "ACNT_PRDT_CD": self.account_no[8:],
-                "PDNO": "%" if stock_code else "%",  # 전종목일 경우 "%" 입력 (모의투자는 ""만 가능)
-                "ORD_STRT_DT": datetime.now(self.us_timezone).strftime("%Y%m%d"),  # 미국 현지 시각 기준 당일 날짜
-                "ORD_END_DT": datetime.now(self.us_timezone).strftime("%Y%m%d"),   # 미국 현지 시각 기준 당일 날짜
+                "PDNO": "%",  # 전종목일 경우 "%" 입력 (모의투자는 ""만 가능)
+                "ORD_STRT_DT": us_today,  # 미국 현지 시각 기준 당일 날짜
+                "ORD_END_DT": us_today,   # 미국 현지 시각 기준 당일 날짜
                 "SLL_BUY_DVSN": "00",  # 전체 (00:전체, 01:매도, 02:매수)
                 "CCLD_NCCS_DVSN": "00",  # 전체 (00:전체, 01:체결, 02:미체결)
-                "OVRS_EXCG_CD": "%" if stock_code else "%",  # 전종목일 경우 "%" 입력
+                "OVRS_EXCG_CD": "%",  # 전종목일 경우 "%" 입력
                 "SORT_SQN": "DS",  # 정렬순서 (DS:정순, AS:역순)
                 "ORD_DT": "",  # Null 값 설정
                 "ORD_GNO_BRNO": "",  # Null 값 설정

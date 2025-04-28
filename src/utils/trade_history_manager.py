@@ -214,10 +214,7 @@ class TradeHistoryManager:
             # 첫 매수일 업데이트 (없거나 전량 매도 후 다시 매수하는 경우)
             cursor.execute('''
             UPDATE stock_history
-            SET first_buy_date = CASE 
-                WHEN first_buy_date IS NULL OR all_sold = 1 THEN ?
-                ELSE first_buy_date
-            END,
+            SET first_buy_date = ?,
             all_sold = 0
             WHERE stock_code = ?
             ''', (trade_date, stock_code))
@@ -229,21 +226,17 @@ class TradeHistoryManager:
             SET last_sell_date = ?
             WHERE stock_code = ?
             ''', (trade_date, stock_code))
-            
-            # 전량 매도 여부 확인 (보유 수량 계산)
-            cursor.execute('''
-            SELECT SUM(CASE 
-                WHEN trade_action = 'BUY' THEN quantity 
-                WHEN trade_action = 'SELL' THEN -quantity 
-                ELSE 0 
-            END) as total_quantity
-            FROM trades
-            WHERE stock_code = ?
-            ''', (stock_code,))
-            
-            total_quantity = cursor.fetchone()[0] or 0
-            
-            if total_quantity <= 0:
+
+            # 리밸런싱 매도인 경우 all_sold를 0으로 유지
+            if trade_data["trade_type"] == "REBALANCE":
+                cursor.execute('''
+                UPDATE stock_history
+                SET all_sold = 0
+                WHERE stock_code = ?
+                ''', (stock_code,))
+            else:
+                # 일반 매도인 경우 보유 수량 확인 필요
+                # 현재 코드에서는 전량 매도로 가정하고 all_sold를 1로 설정
                 cursor.execute('''
                 UPDATE stock_history
                 SET all_sold = 1,

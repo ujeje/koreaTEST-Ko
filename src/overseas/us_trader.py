@@ -38,13 +38,13 @@ class USTrader(BaseTrader):
         self.portfolio = None
         self.load_settings()
         
-        # 오늘 매도된 종목 캐싱
-        self.sold_stocks_cache = set()
-        self.sold_stocks_cache_time = 0
-        
         # 장 시작 메시지 표시 여부
         self.market_open_executed = False
         self.last_market_date = None
+        
+        # 원달러 환율 정보 저장 변수
+        self.exchange_rate = None
+        self.exchange_rate_date = None
         
         self.logger.info(f"미국 시장 시간 설정: {self.config['trading']['usa_market_start']} ~ {self.config['trading']['usa_market_end']}")
     
@@ -669,8 +669,7 @@ class USTrader(BaseTrader):
             return sold_stocks
         except Exception as e:
             self.logger.error(f"당일 매도 종목 조회 중 오류 발생: {str(e)}")
-            # 오류 발생 시 파일에 저장된 정보 반환
-            return super().get_today_sold_stocks()
+            return []  # 오류 발생 시 빈 리스트 반환
         
     def get_trailing_stop_sell_price(self, stock_code: str) -> Optional[float]:
         """트레일링 스탑으로 매도된 종목의 매도 가격을 조회합니다.
@@ -691,8 +690,8 @@ class USTrader(BaseTrader):
             # 가장 최근 거래 확인
             latest_trade = all_trades[-1]
             
-            # 마지막 거래가 정상 매도인 경우 None 반환
-            if latest_trade.get("trade_type") != "TRAILING_STOP":
+            # 마지막 거래가 트레일링 스탑 매도인 경우만 가격 반환
+            if latest_trade.get("trade_type") != "TRAILING_STOP" or latest_trade.get("trade_action") != "SELL":
                 return None
                 
             # 마지막 거래가 트레일링 스탑 매도인 경우 가격 반환
@@ -723,7 +722,7 @@ class USTrader(BaseTrader):
             latest_trade = all_trades[-1]
             
             # 마지막 거래가 정상 매도인 경우 가격 반환
-            if latest_trade.get("trade_type") == "SELL":
+            if latest_trade.get("trade_type") == "SELL" and latest_trade.get("trade_action") == "SELL":
                 return float(latest_trade.get("price", 0))
             
             return None
@@ -795,12 +794,9 @@ class USTrader(BaseTrader):
             total_balance = self._retry_api_call(self.us_api.get_total_balance)
             if total_balance is None:
                 return
-            
-            # USD 통화 정보 찾기
-            usd_balance = next(x for x in total_balance['output2'] if x['crcy_cd'] == 'USD')
-            
+
             # 총자산금액을 환율로 나누어 달러로 환산
-            total_assets = float(total_balance['output3']['tot_asst_amt']) / float(usd_balance['frst_bltn_exrt'])
+            total_assets = float(total_balance['output3']['tot_asst_amt']) / self.exchange_rate
             
             # 보유 종목별 현재 비율 계산
             holdings = {}
@@ -934,9 +930,14 @@ class USTrader(BaseTrader):
             if self.execution_date != now.strftime("%Y-%m-%d"):
                 self.execution_date = now.strftime("%Y-%m-%d")
                 self.market_open_executed = False
-                self.sold_stocks_cache = []  # 당일 매도 종목 캐시 초기화
-                self.sold_stocks_cache_time = 0  # 캐시 시간 초기화
+                # 환율 정보 초기화
+                self.exchange_rate = None
+                self.exchange_rate_date = None
                 self.logger.info(f"=== {self.execution_date} 미국 시간 기준 매매 시작 ===")
+                
+                # 0. 원달러 환율 조회 (하루에 한 번만 실행)
+                self._get_exchange_rate()
+            
             
             # 1. 스탑로스/트레일링 스탑 체크 (매 루프마다 실행)
             self._check_stop_conditions()
@@ -954,6 +955,7 @@ class USTrader(BaseTrader):
                     self.logger.error("계좌 잔고 조회 실패")
                     return
                 
+                
                 # 3-1. 매도 조건 처리
                 self._process_sell_conditions(balance)
                 
@@ -967,7 +969,7 @@ class USTrader(BaseTrader):
                 
                 self.market_open_executed = True
                 self.logger.info("장 시작 매매 실행 완료")
-            
+
         except Exception as e:
             error_msg = f"매매 실행 중 오류 발생: {str(e)}"
             self.logger.error(error_msg)
@@ -1031,7 +1033,7 @@ class USTrader(BaseTrader):
                         
                         # 거래 내역 저장
                         trade_data = {
-                            "trade_type": "SELL",
+                            "trade_type": "USER",
                             "trade_action": "SELL",
                             "stock_code": stock_code,
                             "stock_name": stock_name,
@@ -1212,9 +1214,27 @@ class USTrader(BaseTrader):
                 return
             
             # 당일 매도한 종목은 스킵
-            if self.is_sold_today(stock_code):
+            sold_stocks = self.get_today_sold_stocks()
+            if stock_code.split('.')[0] in sold_stocks:
                 self.logger.info(f"{row['종목명']}({stock_code}) - 당일 매도 종목 재매수 제한")
                 return
+            
+            # 매수 가능 금액 API로 환율 정보 조회
+            buyable_data = self._retry_api_call(self.us_api.get_psbl_amt, stock_code)
+            if buyable_data is None:
+                return
+                
+            # 총자산 계산 - 저장된 환율 정보 사용
+            total_balance = self._retry_api_call(self.us_api.get_total_balance)
+            if total_balance is None:
+                return
+                
+            # 클래스 변수에 저장된 환율 정보 사용 (만약 없다면 매수 가능 금액 API 환율로 대체)
+            if self.exchange_rate is None:
+                self.exchange_rate = float(buyable_data['output']['exrt'])
+                self.logger.info(f"저장된 환율 정보가 없어 현재 조회한 환율 사용: ${1:.2f} = ₩{self.exchange_rate:.2f}")
+                
+            total_assets = float(total_balance['output3']['tot_asst_amt']) / self.exchange_rate
             
             # 트레일링 스탑으로 매도된 종목 체크
             trailing_stop_price = self.get_trailing_stop_sell_price(stock_code.split('.')[0])
@@ -1239,10 +1259,15 @@ class USTrader(BaseTrader):
                 
                 if is_above_ma:
                     # 이평선 위에 있는 경우 추가 조건 체크
-                    # 조건 1: 전일 종가가 TS 매도가보다 큰지 확인
+                    # 조건 1: 전일/전주 종가가 TS 매도가보다 큰지 확인
                     is_above_ts_price = prev_close > trailing_stop_price
+                    
+                    # 일/주 구분에 따른 문구 설정
+                    price_period = "전일" if period_div_code == "D" else "전주"
+                    price_unit = "일" if period_div_code == "D" else "주"
+                    
                     if is_above_ts_price:
-                        self.logger.info(f"{row['종목명']}({stock_code}) - 전일 종가(${prev_close:.2f})가 TS 매도가(${trailing_stop_price:.2f})보다 크므로 매수조건 충족 여부와 관계없이 즉시 재매수")
+                        self.logger.info(f"{row['종목명']}({stock_code}) - {price_period} 종가(${prev_close:.2f})가 TS 매도가(${trailing_stop_price:.2f})보다 크므로 매수조건 충족 여부와 관계없이 즉시 재매수")
                         
                         # 즉시 재매수 추가
                         buy_amount = total_assets * allocation_ratio
@@ -1260,7 +1285,7 @@ class USTrader(BaseTrader):
                             
                             if result:
                                 msg = f"매수 주문 실행: {row['종목명']}({stock_code}) {buy_quantity}주"
-                                msg += f"\n- 매수 사유: 트레일링 스탑 매도 후 재매수 (전일 종가 > TS 매도가)"
+                                msg += f"\n- 매수 사유: 트레일링 스탑 매도 후 재매수 ({price_period} 종가 > TS 매도가)"
                                 msg += f"\n- 매수 금액: ${buy_quantity * current_price:.2f}"
                                 self.logger.info(msg)
                                 
@@ -1277,7 +1302,7 @@ class USTrader(BaseTrader):
                                     "ma_value": ma_value,
                                     "ma_condition": "트레일링스탑매도후재매수",
                                     "period_div_code": period_div_code,
-                                    "reason": f"트레일링 스탑 매도 후 재매수 조건 충족 (전일 종가 ${prev_close:.2f} > TS 매도가 ${trailing_stop_price:.2f})"
+                                    "reason": f"트레일링 스탑 매도 후 재매수 조건 충족 ({price_period} 종가 ${prev_close:.2f} > TS 매도가 ${trailing_stop_price:.2f})"
                                 }
                                 self.trade_history.add_trade(trade_data)
                             
@@ -1285,7 +1310,7 @@ class USTrader(BaseTrader):
                             return
                     else:
                         # 조건 2: TS 매도 이후 이평선을 한 번이라도 이탈했는지 확인
-                        has_crossed_below = self._check_ma_cross_below_since_ts_sell(stock_code.split('.')[0], ts_sell_date, ma_period, period_div_code)
+                        has_crossed_below = self._check_ma_cross_below_since_ts_sell(stock_code, ts_sell_date, ma_period, period_div_code)
                         
                         if not has_crossed_below:
                             # 두 조건 모두 충족하지 않으면 재매수 제한
@@ -1309,10 +1334,14 @@ class USTrader(BaseTrader):
                     above_ma = prev_close > ma_value
                     higher_than_last_sell = prev_close > last_normal_sell_price
                     
+                    # 일/주 구분에 따른 문구 설정
+                    price_period = "전일" if period_div_code == "D" else "전주"
+                    price_unit = "일" if period_div_code == "D" else "주"
+                    
                     if above_ma and higher_than_last_sell:
                         msg = f"{row['종목명']}({stock_code}) - 정상 매도 후 재매수 조건 충족"
-                        msg += f"\n- 전일 종가(${prev_close:.2f})가 {ma_period}{period_unit}(${ma_value:.2f}) 위에 있고,"
-                        msg += f"\n- 전일 종가(${prev_close:.2f})가 직전 정상 매도가(${last_normal_sell_price:.2f})보다 높음"
+                        msg += f"\n- {price_period} 종가(${prev_close:.2f})가 {ma_period}{period_unit}(${ma_value:.2f}) 위에 있고,"
+                        msg += f"\n- {price_period} 종가(${prev_close:.2f})가 직전 정상 매도가(${last_normal_sell_price:.2f})보다 높음"
                         self.logger.info(msg)
                         
                         # 매수 금액 계산 (총자산 * 배분비율)
@@ -1331,7 +1360,7 @@ class USTrader(BaseTrader):
                             
                             if result:
                                 msg = f"매수 주문 실행: {row['종목명']}({stock_code}) {buy_quantity}주"
-                                msg += f"\n- 매수 사유: 정상 매도 후 재매수 (전일 종가 > 이평선 && 전일 종가 > 정상 매도가)"
+                                msg += f"\n- 매수 사유: 정상 매도 후 재매수 ({price_period} 종가 > 이평선 && {price_period} 종가 > 정상 매도가)"
                                 msg += f"\n- 매수 금액: ${buy_quantity * current_price:.2f}"
                                 self.logger.info(msg)
                                 
@@ -1348,11 +1377,9 @@ class USTrader(BaseTrader):
                                     "ma_value": ma_value,
                                     "ma_condition": "정상매도후재매수",
                                     "period_div_code": period_div_code,
-                                    "reason": f"정상 매도 후 재매수 조건 충족 (전일 종가 ${prev_close:.2f} > MA {ma_period}{period_unit} ${ma_value:.2f} && 전일 종가 > 정상 매도가 ${last_normal_sell_price:.2f})"
+                                    "reason": f"정상 매도 후 재매수 조건 충족 ({price_period} 종가 ${prev_close:.2f} > MA {ma_period}{period_unit} ${ma_value:.2f} && {price_period} 종가 > 정상 매도가 ${last_normal_sell_price:.2f})"
                                 }
                                 self.trade_history.add_trade(trade_data)
-                                
-                                self.logger.info(f"{row['종목명']}({stock_code}) - 정상 매도 후 재매수 완료 (매수조건 충족 여부와 관계없이)")
                             
                             # 다른 매수 조건 확인 스킵
                             return
@@ -1364,7 +1391,8 @@ class USTrader(BaseTrader):
             
             if should_buy and ma is not None:
                 # 당일 매도 종목 체크
-                if self.is_sold_today(stock_code):
+                sold_stocks = self.get_today_sold_stocks()
+                if stock_code.split('.')[0] in sold_stocks:
                     msg = f"당일 매도 종목 재매수 제한 - {row['종목명']}({stock_code})"
                     self.logger.info(msg)
                     return
@@ -1391,17 +1419,8 @@ class USTrader(BaseTrader):
                     self.logger.info(msg)
                     return
                 
-                buyable_data = self._retry_api_call(self.us_api.get_psbl_amt, stock_code)
-                if buyable_data is None:
-                    return
-                
-                # 주문가능금액 확인
-                available_cash = float(buyable_data['output']['frcr_ord_psbl_amt1'])     #주문가능금액 - 외화인경우 "ord_psbl_frcr_amt" / 원화인경우 "frcr_ord_psbl_amt1"
-                total_balance = self._retry_api_call(self.us_api.get_total_balance)
-                if total_balance is None:
-                    return
-                # 총자산금액을 환율로 나누어 달러로 환산
-                total_assets = float(total_balance['output3']['tot_asst_amt']) / float([x['frst_bltn_exrt'] for x in total_balance['output2'] if x['crcy_cd'] == 'USD'][0])
+                # 주문가능금액은 상단에서 이미 얻은 buyable_data 재사용
+                available_cash = float(buyable_data['output']['frcr_ord_psbl_amt1'])     #주문가능금액 - 외화인경우 "ord_psbl_frcr_amt" / 통합증거금 "frcr_ord_psbl_amt1"
                 
                 # 매수 금액 계산 (총자산 * 배분비율)
                 buy_amount = total_assets * allocation_ratio
@@ -1502,11 +1521,12 @@ class USTrader(BaseTrader):
                         self.logger.info("매도 주문 체결 대기 중... (5초)")
                         time.sleep(5)  # 매도 주문 체결을 위해 5초 대기
                         
-                        # 주문가능금액 다시 확인
+                        # 주문가능금액 다시 확인 (POOL 종목 매도 후 갱신 필요)
                         buyable_data = self._retry_api_call(self.us_api.get_psbl_amt, stock_code)
                         if buyable_data is None:
                             return
                         available_cash = float(buyable_data['output']['frcr_ord_psbl_amt1'])
+                        
                     else:
                         self.logger.info(f"현금 확보 실패: ${secured_cash:.2f} (필요 금액: ${cash_to_secure:.2f})")
                         # 현금 확보 실패 시에도 계속 진행 (남은 현금으로 최대한 매수)
@@ -1611,13 +1631,9 @@ class USTrader(BaseTrader):
             total_balance = self._retry_api_call(self.us_api.get_total_balance)
             if total_balance is None:
                 return False
-            
-            # USD 통화 정보 찾기
-            usd_balance = next(x for x in total_balance['output2'] if x['crcy_cd'] == 'USD')
-            
+
             # 총자산금액을 환율로 나누어 달러로 환산
-            total_assets = float(total_balance['output3']['tot_asst_amt']) / float(usd_balance['frst_bltn_exrt'])
-            d2_deposit = float(usd_balance['frcr_dncl_amt_2'])
+            total_assets = float(total_balance['output3']['tot_asst_amt']) / self.exchange_rate
             
             # 스탑로스 체크
             loss_pct = (current_price - entry_price) / entry_price * 100
@@ -1777,32 +1793,21 @@ class USTrader(BaseTrader):
             holdings_sheet = self._get_holdings_sheet()
             self._update_holdings_sheet(holdings_data, holdings_sheet)
             
-            # 환율 정보 가져오기
-            exchange_rate = 1.0  # 기본값
-            
-            # output2에서 USD 통화에 대한 환율 정보 찾기
-            if 'output2' in balance and balance['output2']:
-                for currency_info in balance['output2']:
-                    if currency_info.get('crcy_cd') == 'USD':
-                        exchange_rate = float(currency_info.get('frst_bltn_exrt', 1.0))
-                        #self.logger.info(f"현재 환율: 1 USD = {exchange_rate} KRW")
-                        break
-            
-           
+
             # inquire-present-balance API에서 제공하는 요약 정보 가져오기
             output3 = balance.get('output3', [{}])
             
             # 매입금액합계금액 (pchs_amt_smtl) - 원화를 달러로 변환
-            total_purchase_amount = round(float(output3.get('pchs_amt_smtl', 0)) / exchange_rate, 2)
+            total_purchase_amount = round(float(output3.get('pchs_amt_smtl', 0)) / self.exchange_rate, 2)
             
             # 평가금액합계금액 (evlu_amt_smtl) - 원화를 달러로 변환
-            total_eval_amount = round(float(output3.get('evlu_amt_smtl', 0)) / exchange_rate, 2)
+            total_eval_amount = round(float(output3.get('evlu_amt_smtl', 0)) / self.exchange_rate, 2)
             
             # 총평가손익금액 (tot_evlu_pfls_amt) - 원화를 달러로 변환
-            total_eval_profit_loss = round(float(output3.get('tot_evlu_pfls_amt', 0)) / exchange_rate, 2)
+            total_eval_profit_loss = round(float(output3.get('tot_evlu_pfls_amt', 0)) / self.exchange_rate, 2)
             
             # 총자산금액 (tot_asst_amt) - 원화를 달러로 변환
-            total_asset_amount = round(float(output3.get('tot_asst_amt', 0)) / exchange_rate, 2)
+            total_asset_amount = round(float(output3.get('tot_asst_amt', 0)) / self.exchange_rate, 2)
             
             # 총수익률 계산 (evlu_erng_rt1) - 퍼센트 값이므로 변환 불필요
             total_profit_rate = round(float(output3.get('evlu_erng_rt1', 0)), 2)
@@ -1816,7 +1821,7 @@ class USTrader(BaseTrader):
             summary_data = [
                 [total_purchase_amount],  # 매입금액합계금액 (달러)
                 [total_eval_amount],      # 평가금액합계금액 (달러)
-                [total_asset_amount]      # 총자산금액 (달러)               
+                [total_asset_amount]      # 총자산금액 (달러)
             ]
             
             summary_range = f"{holdings_sheet}!K5:K7"
@@ -1871,25 +1876,10 @@ class USTrader(BaseTrader):
             sell_date_obj = datetime.strptime(ts_sell_date, "%Y-%m-%d")
             start_date = sell_date_obj.strftime("%Y%m%d")
             
-            # 미국 주식의 경우 거래소 코드 필요
-            full_code = stock_code
-            if '.' not in stock_code:
-                # 거래소 코드 조회 시도
-                for _, row in self.individual_stocks.iterrows():
-                    if row['종목코드'] == stock_code:
-                        full_code = f"{stock_code}.{row['거래소']}"
-                        break
-                
-                if '.' not in full_code:
-                    for _, row in self.pool_stocks.iterrows():
-                        if row['종목코드'] == stock_code:
-                            full_code = f"{stock_code}.{row['거래소']}"
-                            break
-            
             # 일봉/주봉 데이터 조회
             hist_data = self._retry_api_call(
                 self.us_api.get_daily_price,
-                full_code,
+                stock_code,
                 start_date,
                 end_date,
                 period_div_code
@@ -1924,7 +1914,7 @@ class USTrader(BaseTrader):
                 
                 ma_hist_data = self._retry_api_call(
                     self.us_api.get_daily_price,
-                    full_code,
+                    stock_code,
                     ma_start_date,
                     ma_end_date,
                     period_div_code
@@ -1959,4 +1949,32 @@ class USTrader(BaseTrader):
             
         except Exception as e:
             self.logger.error(f"{stock_code} - 이평선 이탈 확인 중 오류 발생: {str(e)}")
+            return False
+
+    def _get_exchange_rate(self) -> bool:
+        """원달러 환율 정보를 조회합니다. (나스닥, 애플 종목의 주문가능금액API 활용)"""
+        try:
+            current_date = datetime.now(self.us_timezone).strftime("%Y-%m-%d")
+            
+            # 오늘 이미 조회한 경우 재사용
+            if self.exchange_rate is not None and self.exchange_rate_date == current_date:
+                self.logger.info(f"기존 환율 정보 사용: ${1:.2f} = ₩{self.exchange_rate:.2f}")
+                return True
+            
+            # 나스닥, 애플 종목의 주문가능금액API로 환율 조회
+            stock_code = "AAPL.NASD"  # 애플 종목코드
+            
+            buyable_data = self._retry_api_call(self.us_api.get_psbl_amt, stock_code)
+            if buyable_data is None:
+                self.logger.error("환율 정보 조회 실패")
+                return False
+            
+            self.exchange_rate = float(buyable_data['output']['exrt'])
+            self.exchange_rate_date = current_date
+            
+            self.logger.info(f"환율 정보 조회 완료: ${1:.2f} = ₩{self.exchange_rate:.2f}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"환율 정보 조회 중 오류 발생: {str(e)}")
             return False
