@@ -856,7 +856,7 @@ class USTrader(BaseTrader):
                             stock_code,
                             "BUY",
                             quantity_diff,
-                            buy_price
+                            round(buy_price, 2)
                         )
                         if result:
                             msg = f"리밸런싱 매수: {info['name']}({stock_code}) {quantity_diff}주"
@@ -888,7 +888,7 @@ class USTrader(BaseTrader):
                             stock_code,
                             "SELL",
                             abs(quantity_diff),
-                            sell_price
+                            round(sell_price, 2)
                         )
                         if result:
                             msg = f"리밸런싱 매도: {info['name']}({stock_code}) {abs(quantity_diff)}주"
@@ -1016,7 +1016,7 @@ class USTrader(BaseTrader):
                     sell_price = current_price * 0.99
                     
                     # 매도 주문 실행
-                    result = self._retry_api_call(self.us_api.order_stock, stock_code, "SELL", quantity, sell_price)
+                    result = self._retry_api_call(self.us_api.order_stock, stock_code, "SELL", quantity, round(sell_price, 2))
                     
                     if result:
                         # 매수 평균가 가져오기
@@ -1106,7 +1106,7 @@ class USTrader(BaseTrader):
                     sell_price = current_price * 0.99
                     
                     # 매도 주문 실행
-                    result = self._retry_api_call(self.us_api.order_stock, stock_code, "SELL", quantity, sell_price)
+                    result = self._retry_api_call(self.us_api.order_stock, stock_code, "SELL", quantity, round(sell_price, 2))
                     
                     if result:
                         msg = f"매도 주문 실행: {stock_name} {quantity}주 (지정가)"
@@ -1280,7 +1280,7 @@ class USTrader(BaseTrader):
                                 stock_code,
                                 "BUY",
                                 buy_quantity,
-                                current_price
+                                round(current_price * 1.01, 2)
                             )
                             
                             if result:
@@ -1355,7 +1355,7 @@ class USTrader(BaseTrader):
                                 stock_code,
                                 "BUY",
                                 buy_quantity,
-                                current_price
+                                round(current_price * 1.01, 2)
                             )
                             
                             if result:
@@ -1489,7 +1489,7 @@ class USTrader(BaseTrader):
                             pool_stock['code'],
                             "SELL",
                             sell_quantity,
-                            sell_price
+                            round(sell_price, 2)
                         )
                         
                         if result:
@@ -1552,7 +1552,7 @@ class USTrader(BaseTrader):
                     stock_code,
                     "BUY",
                     buy_quantity,
-                    buy_price
+                    round(buy_price, 2)
                 )
                 
                 if result:
@@ -1641,8 +1641,10 @@ class USTrader(BaseTrader):
                 trade_msg = f"스탑로스 조건 성립 - {name}({stock_code}): 손실률 {loss_pct:.2f}% <= {self.settings['stop_loss']}%"
                 self.logger.info(trade_msg)
                 
+                sell_price = current_price * 0.99
+                
                 # 스탑로스 매도
-                result = self._retry_api_call(self.us_api.order_stock, stock_code, "SELL", quantity)
+                result = self._retry_api_call(self.us_api.order_stock, stock_code, "SELL", quantity, round(sell_price, 2))
                 if result:
                     msg = f"스탑로스 매도 실행: {name} {quantity}주 (지정가)"
                     msg += f"\n- 매도 사유: 손실률 {loss_pct:.2f}% (스탑로스 {self.settings['stop_loss']}% 도달)"
@@ -1713,7 +1715,7 @@ class USTrader(BaseTrader):
                         # 매도 시 지정가의 1% 낮게 설정하여 시장가처럼 거래
                         sell_price = current_price * 0.99
                         
-                        result = self._retry_api_call(self.us_api.order_stock, stock_code, "SELL", quantity)
+                        result = self._retry_api_call(self.us_api.order_stock, stock_code, "SELL", quantity, round(sell_price, 2))
                         if result:
                             msg = f"트레일링 스탑 매도 실행: {name} {quantity}주 (지정가)"
                             msg += f"\n- 매도 사유: 고점 대비 하락률 {drop_pct:.3f}% (트레일링 스탑 {self.settings['trailing_stop']}% 도달)"
@@ -1797,17 +1799,17 @@ class USTrader(BaseTrader):
             # inquire-present-balance API에서 제공하는 요약 정보 가져오기
             output3 = balance.get('output3', [{}])
             
-            # 매입금액합계금액 (pchs_amt_smtl) - 원화를 달러로 변환
-            total_purchase_amount = round(float(output3.get('pchs_amt_smtl', 0)) / self.exchange_rate, 2)
+            # 매입금액합계금액 (pchs_amt_smtl)
+            total_purchase_amount = round(float(output3.get('pchs_amt_smtl_amt', 0)), 2)
             
-            # 평가금액합계금액 (evlu_amt_smtl) - 원화를 달러로 변환
-            total_eval_amount = round(float(output3.get('evlu_amt_smtl', 0)) / self.exchange_rate, 2)
+            # 평가금액합계금액 (evlu_amt_smtl)
+            total_eval_amount = round(float(output3.get('evlu_amt_smtl_amt', 0)), 2)
             
-            # 총평가손익금액 (tot_evlu_pfls_amt) - 원화를 달러로 변환
-            total_eval_profit_loss = round(float(output3.get('tot_evlu_pfls_amt', 0)) / self.exchange_rate, 2)
+            # 총평가손익금액 (tot_evlu_pfls_amt)
+            total_eval_profit_loss = round(float(output3.get('tot_evlu_pfls_amt', 0)), 2)
             
-            # 총자산금액 (tot_asst_amt) - 원화를 달러로 변환
-            total_asset_amount = round(float(output3.get('tot_asst_amt', 0)) / self.exchange_rate, 2)
+            # 총자산금액 (tot_asst_amt)
+            total_asset_amount = round(float(output3.get('tot_asst_amt', 0)), 2)
             
             # 총수익률 계산 (evlu_erng_rt1) - 퍼센트 값이므로 변환 불필요
             total_profit_rate = round(float(output3.get('evlu_erng_rt1', 0)), 2)
@@ -1847,10 +1849,10 @@ class USTrader(BaseTrader):
             self.google_sheet.update_error_message("", holdings_sheet)
             
             # 보유 종목 리스트 업데이트 (기존 데이터 초기화 후 새로운 데이터 추가)
-            self.logger.info(f"미국 주식 현황 데이터 초기화 및 업데이트 시작 (총 {len(holdings_data)}개 종목)")
+            self.logger.info(f"미국 주식 현황 데이터 초기화 및 업데이트 시작 (총 {len(holdings_data)}개 종목)", send_discord=False)
             self.google_sheet.update_holdings(holdings_data, holdings_sheet)
             
-            self.logger.info(f"미국 주식 현황 업데이트 완료 ({update_time})")
+            self.logger.info(f"미국 주식 현황 업데이트 완료 ({update_time})", send_discord=False)
             
         except Exception as e:
             error_msg = f"주식현황 시트 업데이트 실패: {str(e)}"

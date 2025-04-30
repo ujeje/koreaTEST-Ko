@@ -82,8 +82,10 @@ class GoogleSheetManager:
             
             # 설정값 파싱
             settings = {
-                'max_individual_stocks': int(value_ranges[0]['values'][0][0]) if value_ranges[0].get('values') else 5,
-                'max_pool_stocks': int(value_ranges[1]['values'][0][0]) if value_ranges[1].get('values') else 5,
+                # 'max_individual_stocks': int(value_ranges[0]['values'][0][0]) if value_ranges[0].get('values') else 5,
+                # 'max_pool_stocks': int(value_ranges[1]['values'][0][0]) if value_ranges[1].get('values') else 5,
+                'max_individual_stocks': 99,
+                'max_pool_stocks': 99,
                 'stop_loss': float(value_ranges[2]['values'][0][0]) if value_ranges[2].get('values') else 5.0,
                 'trailing_start': float(value_ranges[3]['values'][0][0]) if value_ranges[3].get('values') else 10.0,
                 'trailing_stop': float(value_ranges[4]['values'][0][0]) if value_ranges[4].get('values') else 5.0,
@@ -96,8 +98,8 @@ class GoogleSheetManager:
             self.logger.error(f"설정 로드 중 오류 발생: {str(e)}")
             # 기본 설정값 반환
             default_settings = {
-                'max_individual_stocks': 5,
-                'max_pool_stocks': 5,
+                'max_individual_stocks': 99,
+                'max_pool_stocks': 99,
                 'stop_loss': 5.0,
                 'trailing_start': 10.0,
                 'trailing_stop': 5.0,

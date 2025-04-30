@@ -9,6 +9,13 @@ api:
     account: "7468442901"                                 # 실전투자 계좌번호
     url: "https://openapi.koreainvestment.com:9443"      # 실전투자 서버 주소
   
+  # 실전투자 설정 (부회장님-미장)
+  # real:
+  #   key: "PSUqICz6xBCVe0jyG4on0ieqDfC1iMsbtw5m"         # 실전투자 API Key
+  #   secret: "urm7sRZDbKwXDI/0uGlgKBA9rOg1KssYiCIZtoHyg1T9a7HyIVOPVEaWE26L+ihvyjNLXoclj3UqGwmgzLBJcdIJ1vemovAkfBrWbRQFpA2/XFUxfNtVNZLwoWgvrBzQNm5B0/t3IZXz5JBJROUidsVxIKSwbSBIdAvye27j0rT8fJnsQLY="  # 실전투자 API Secret
+  #   account: "4300578001"                                 # 실전투자 계좌번호
+  #   url: "https://openapi.koreainvestment.com:9443"      # 실전투자 서버 주소  
+  
   # 모의투자 설정 (병인)
   paper:
     key: "PSI6ckkJO8EJiSdIL99r51sTBtyrpCknXFfh"         # 모의투자 API Key
@@ -25,7 +32,11 @@ discord:
   #주식TEST
   webhook_url: "https://discordapp.com/api/webhooks/1366499513551814776/yws9_zwaOUtvXn6sXWwy1r1HCzIWZr4WCJSdR768nzk1FQvetvraZmpmktt5pMYl9Ngb"  # 디스코드 알림 웹훅 URL
 
-# 구글 스프레드시트 설정
+# 구글 스프레드시트 설정 (부회장님)
+# google_sheet:
+#   spreadsheet_id: "1HMg-EpaE1E19m3gZPpid0JZoJr_LAy2aEscyzB8MA9Q"  # 구글 스프레드시트 ID
+#   credentials_path: 'config/google_credentials.json'                # 구글 API 인증 파일 경로
+# 구글 스프레드시트 설정 (병인)
 google_sheet:
   spreadsheet_id: "1PlL0HYykIDb-iSjn-Z2WfbmnWXN0_SuSUPwv2QdJmW4"  # 구글 스프레드시트 ID
   credentials_path: 'config/google_credentials.json'                # 구글 API 인증 파일 경로
@@ -58,10 +69,10 @@ google_sheet:
 trading:
   is_test_mode: false               # 테스트 모드 여부 (true: 항상 장 시작으로 간주, false: 실제 시간 기준 장 시작 확인)
   market:
-    type: ['USA']                    # 거래 시장 설정 (KOR: 한국, USA: 미국)  type: ['KOR', 'USA']
-  kor_market_start: '0900'           # 한국 장 시작 시간 (HHMM)  09:00
+    type: ['KOR']                    # 거래 시장 설정 (KOR: 한국, USA: 미국)  type: ['KOR', 'USA']
+  kor_market_start: '1407'           # 한국 장 시작 시간 (HHMM)  09:00
   kor_market_end: '1530'             # 한국 장 종료 시간 (HHMM)
-  usa_market_start: '0930'          # 미국 장 시작 시간 (미국 현지 시간, HHMM)  09:30
+  usa_market_start: '1500'          # 미국 장 시작 시간 (미국 현지 시간, HHMM)  09:30
   usa_market_end: '1600'             # 미국 장 종료 시간 (미국 현지 시간, HHMM)
 
 # 로깅 설정

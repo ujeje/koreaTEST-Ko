@@ -1859,10 +1859,10 @@ class KRTrader(BaseTrader):
             self.google_sheet.update_error_message("", holdings_sheet)
             
             # 보유 종목 리스트 업데이트 (기존 데이터 초기화 후 새로운 데이터 추가)
-            self.logger.info(f"국내 주식 현황 데이터 초기화 및 업데이트 시작 (총 {len(holdings_data)}개 종목)")
+            self.logger.info(f"국내 주식 현황 데이터 초기화 및 업데이트 시작 (총 {len(holdings_data)}개 종목)", send_discord=False)
             self.google_sheet.update_holdings(holdings_data, holdings_sheet)
             
-            self.logger.info(f"국내 주식 현황 업데이트 완료 ({update_time})")
+            self.logger.info(f"국내 주식 현황 업데이트 완료 ({update_time})", send_discord=False)
             
         except Exception as e:
             error_msg = f"주식현황 시트 업데이트 실패: {str(e)}"
