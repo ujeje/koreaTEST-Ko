@@ -56,8 +56,8 @@ google_sheet:
       trailing_start: "H11"          # 트레일링 시작 설정값 (%)
       trailing_stop: "H12"           # 트레일링 스탑 설정값 (%)
       rebalancing_date: "H7"        # 리밸런싱 일자
-      individual_stocks: "A21:N50"   # 개별 종목 목록 범위
-      pool_stocks: "A61:N80"         # POOL 종목 목록 범위
+      individual_stocks: "A21:P50"   # 개별 종목 목록 범위
+      pool_stocks: "A61:P80"         # POOL 종목 목록 범위
     
     # 주식현황 탭의 각 항목 좌표 (국내/미국 공통)
     holdings:
@@ -70,7 +70,7 @@ trading:
   is_test_mode: false               # 테스트 모드 여부 (true: 항상 장 시작으로 간주, false: 실제 시간 기준 장 시작 확인)
   market:
     type: ['KOR']                    # 거래 시장 설정 (KOR: 한국, USA: 미국)  type: ['KOR', 'USA']
-  kor_market_start: '1206'           # 한국 장 시작 시간 (HHMM)  09:00
+  kor_market_start: '1221'           # 한국 장 시작 시간 (HHMM)  09:00
   kor_market_end: '1530'             # 한국 장 종료 시간 (HHMM)
   usa_market_start: '1500'          # 미국 장 시작 시간 (미국 현지 시간, HHMM)  09:30
   usa_market_end: '1600'             # 미국 장 종료 시간 (미국 현지 시간, HHMM)

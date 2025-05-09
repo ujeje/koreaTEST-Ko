@@ -50,6 +50,9 @@ class GoogleSheetManager:
             
         Returns:
             dict: 설정값 딕셔너리
+            
+        Raises:
+            Exception: 설정 로드 중 오류 발생 시
         """
         try:
             self.logger.info(f"{market_type} 시장 설정을 로드합니다.")
@@ -95,19 +98,13 @@ class GoogleSheetManager:
             return settings
             
         except Exception as e:
-            self.logger.error(f"설정 로드 중 오류 발생: {str(e)}")
-            # 기본 설정값 반환
-            default_settings = {
-                'max_individual_stocks': 99,
-                'max_pool_stocks': 99,
-                'stop_loss': 5.0,
-                'trailing_start': 10.0,
-                'trailing_stop': 5.0,
-                'rebalancing_date': "",
-            }
+            error_msg = f"설정 로드 중 오류 발생: {str(e)}"
+            self.logger.error(error_msg)
+            from discord_webhook import DiscordWebhook
+            webhook = DiscordWebhook(url=self.discord_webhook_url, content=f"```diff\n- {error_msg}\n```")
+            webhook.execute()
+            raise Exception(f"구글 시트에서 설정을 로드하지 못했습니다: {str(e)}")
 
-            return default_settings
-    
     def _parse_date(self, date_str) -> str:
         """다양한 형식의 날짜를 MMDD 형식으로 변환합니다."""
         try:
@@ -172,6 +169,12 @@ class GoogleSheetManager:
         
         Args:
             market_type (str): 시장 유형 (KOR/USA)
+            
+        Returns:
+            pd.DataFrame: 개별 종목 정보 데이터프레임
+            
+        Raises:
+            Exception: 데이터 로드 중 오류 발생 시
         """
         try:
             self.logger.info(f"{market_type} 시장의 개별 종목 정보를 로드합니다...")
@@ -197,7 +200,7 @@ class GoogleSheetManager:
                 from discord_webhook import DiscordWebhook
                 webhook = DiscordWebhook(url=self.discord_webhook_url, content=f"```diff\n- {error_msg}\n```")
                 webhook.execute()
-                return pd.DataFrame(columns=columns)
+                raise Exception("구글 시트에서 개별 종목 정보를 가져오지 못했습니다.")
             
             # 첫 행이 헤더인지 확인하고 처리
             if '종목코드' in values[0]:
@@ -258,13 +261,19 @@ class GoogleSheetManager:
             from discord_webhook import DiscordWebhook
             webhook = DiscordWebhook(url=self.discord_webhook_url, content=f"```diff\n- {error_msg}\n```")
             webhook.execute()
-            return pd.DataFrame(columns=columns)
+            raise Exception(f"구글 시트에서 개별 종목 정보를 로드하지 못했습니다: {str(e)}")
     
     def get_pool_stocks(self, market_type: str = "KOR") -> pd.DataFrame:
         """POOL 종목 정보를 가져옵니다.
         
         Args:
             market_type (str): 시장 유형 (KOR/USA)
+            
+        Returns:
+            pd.DataFrame: POOL 종목 정보 데이터프레임
+            
+        Raises:
+            Exception: 데이터 로드 중 오류 발생 시
         """
         try:
             self.logger.info(f"{market_type} 시장의 POOL 종목 정보를 로드합니다...")
@@ -290,7 +299,7 @@ class GoogleSheetManager:
                 from discord_webhook import DiscordWebhook
                 webhook = DiscordWebhook(url=self.discord_webhook_url, content=f"```diff\n- {error_msg}\n```")
                 webhook.execute()
-                return pd.DataFrame(columns=columns)
+                raise Exception("구글 시트에서 POOL 종목 정보를 가져오지 못했습니다.")
             
             # 첫 행이 헤더인지 확인하고 처리
             if '종목코드' in values[0]:
@@ -351,7 +360,7 @@ class GoogleSheetManager:
             from discord_webhook import DiscordWebhook
             webhook = DiscordWebhook(url=self.discord_webhook_url, content=f"```diff\n- {error_msg}\n```")
             webhook.execute()
-            return pd.DataFrame(columns=columns)
+            raise Exception(f"구글 시트에서 POOL 종목 정보를 로드하지 못했습니다: {str(e)}")
     
     def update_last_update_time(self, value: str, holdings_sheet: str) -> None:
         """마지막 업데이트 시간을 갱신합니다."""

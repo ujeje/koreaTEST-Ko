@@ -3,11 +3,13 @@ import yaml
 import time
 import logging
 import pytz
+import sys
 from datetime import datetime
 from src.korean.kr_trader import KRTrader
 from src.overseas.us_trader import USTrader
 from src.utils.logger import setup_logger
 from src.utils.google_sheet_manager import GoogleSheetManager
+from discord_webhook import DiscordWebhook
 
 def is_korean_market_time(kr_trader = None) -> bool:
     """한국 시장 운영 시간인지 확인합니다."""
@@ -160,10 +162,25 @@ def main():
                     for market in new_markets:
                         logger.info(f"\n=== {market} 시장이 개장되었습니다 ===")
                         # 설정 로드
-                        traders[market].load_settings()
-                        logger.info(f"{market} 시장의 설정을 로드했습니다.")
-                        # 설정 출력
-                        #print_trading_settings(logger, market, traders[market])
+                        try:
+                            traders[market].load_settings()
+                            logger.info(f"{market} 시장의 설정을 로드했습니다.")
+                            # 설정 출력
+                            #print_trading_settings(logger, market, traders[market])
+                        except Exception as e:
+                            error_msg = f"{market} 시장 설정 로드 실패: {str(e)}"
+                            logger.error(error_msg)
+                            # 디스코드로 알림 보내기
+                            try:
+                                webhook = DiscordWebhook(url=config['discord']['webhook_url'], 
+                                                        content=f"```diff\n- {error_msg}\n```")
+                                webhook.execute()
+                            except Exception as webhook_error:
+                                logger.error(f"디스코드 알림 전송 실패: {str(webhook_error)}")
+                            
+                            logger.error("구글 스프레드시트에서 설정을 로드하지 못해 프로그램을 종료합니다.")
+                            # 프로그램 종료
+                            sys.exit(1)
                     
                     # 활성화된 시장 업데이트
                     active_markets = current_active_markets
