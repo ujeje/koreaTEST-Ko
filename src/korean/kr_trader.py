@@ -910,7 +910,7 @@ class KRTrader(BaseTrader):
                     else:
                         self.logger.error("계좌 잔고 조회 실패로 리밸런싱을 실행할 수 없습니다.")
                 else:
-                    self.logger.info("2. 리밸런싱 조건 불충족")
+                    self.logger.info("2. 리밸런싱 조건 미충족")
                 
                 # 3. 시가 매수 실행
                 self.logger.info("3. 시가 매수 실행")
@@ -1112,7 +1112,14 @@ class KRTrader(BaseTrader):
                     elif ma_condition == "트레일링스탑매도후재매수":
                         reason = f"TS 매도 후 재매수: 매수 조건 충족 & 전일 종가가 TS 매도가 이상 상승"
                     else:
-                        reason = f"매수 조건 충족: {ma_condition}{period_unit}선과 {ma_period}{period_unit}선의 골든크로스 발생"
+                        # 골든크로스와 골든구간을 구분
+                        ma_timing = row.get('매수타이밍', '골든구간')  # 기본값은 '골든구간'
+                        if ma_timing == "골든크로스":
+                            reason = f"매수 조건 충족: {ma_condition}{period_unit}선과 {ma_period}{period_unit}선의 골든크로스 발생"
+                        elif ma_timing == "골든구간":
+                            reason = f"매수 조건 충족: {ma_condition}{period_unit}선이 {ma_period}{period_unit}선보다 높은 골든구간"
+                        else:
+                            reason = f"매수 조건 충족: {ma_condition}{period_unit}선과 {ma_period}{period_unit}선의 조건 충족"
                     
                     trade_data = {
                         "trade_type": "BUY",
@@ -1364,7 +1371,13 @@ class KRTrader(BaseTrader):
             if ma_condition == "종가":
                 buy_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}{period_unit}선({ma_value:,.0f}원)을 상향돌파"
             else:
-                buy_msg += f": {ma_condition}{period_unit}선이 {ma_period}{period_unit}선을 골든크로스"
+                # 골든크로스와 골든구간을 구분하여 메시지 출력
+                if ma_timing == "골든크로스":
+                    buy_msg += f": {ma_condition}{period_unit}선이 {ma_period}{period_unit}선을 골든크로스"
+                elif ma_timing == "골든구간":
+                    buy_msg += f": {ma_condition}{period_unit}선이 {ma_period}{period_unit}선보다 높은 골든구간"
+                else:
+                    buy_msg += f": {ma_condition}{period_unit}선이 {ma_period}{period_unit}선과의 조건 충족"
             self.logger.info(buy_msg)
             
             # 매수 금액 계산 (현금 * 배분비율)
@@ -1395,7 +1408,13 @@ class KRTrader(BaseTrader):
                 if ma_condition == "종가":
                     miss_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}{period_unit}선({ma_value:,.0f}원)을 상향돌파하지 않음"
                 else:
-                    miss_msg += f": {ma_condition}{period_unit}선이 {ma_period}{period_unit}선을 골든크로스하지 않음"
+                    # 골든크로스와 골든구간을 구분하여 메시지 출력
+                    if ma_timing == "골든크로스":
+                        miss_msg += f": {ma_condition}{period_unit}선이 {ma_period}{period_unit}선을 골든크로스하지 않음"
+                    elif ma_timing == "골든구간":
+                        miss_msg += f": {ma_condition}{period_unit}선이 {ma_period}{period_unit}선보다 높지 않아 골든구간이 아님"
+                    else:
+                        miss_msg += f": {ma_condition}{period_unit}선이 {ma_period}{period_unit}선과의 조건 미충족"
                 self.logger.info(miss_msg)
             else:
                 self.logger.info(f"{stock_name}({stock_code}) - 이동평균 계산 실패")
@@ -1518,7 +1537,13 @@ class KRTrader(BaseTrader):
                     elif ma_condition == "삭제됨":
                         sell_msg += f": 구글 스프레드시트에서 종목이 삭제됨"
                     else:
-                        sell_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 데드크로스"
+                        # 데드크로스와 데드구간을 구분하여 메시지 출력
+                        if ma_timing == "데드크로스":
+                            sell_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 데드크로스"
+                        elif ma_timing == "데드구간":
+                            sell_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}보다 낮은 데드구간"
+                        else:
+                            sell_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}과의 조건 충족"
                     
                     self.logger.info(sell_msg)
                     
@@ -1544,7 +1569,13 @@ class KRTrader(BaseTrader):
                         if ma_condition == "종가":
                             miss_msg += f": 전일 종가({prev_close:,.0f}원)가 {ma_period}{period_unit}({ma_value:,.0f}원) 아래로 하향돌파하지 않음"
                         else:
-                            miss_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 데드크로스하지 않음"
+                            # 데드크로스와 데드구간을 구분하여 메시지 출력
+                            if ma_timing == "데드크로스":
+                                miss_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 데드크로스하지 않음"
+                            elif ma_timing == "데드구간":
+                                miss_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}보다 낮지 않아 데드구간이 아님"
+                            else:
+                                miss_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}과의 조건 미충족"
                         
                         self.logger.info(miss_msg)
                     else:
@@ -1595,7 +1626,13 @@ class KRTrader(BaseTrader):
                         if ma_condition == "종가":
                             reason = f"매도 조건 충족: {ma_period}{period_unit} 하향돌파 (전일 종가 {prev_close:,.0f}원 < MA {ma_value:,.0f}원)"
                         else:
-                            reason = f"매도 조건 충족: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생"
+                            # 데드크로스와 데드구간을 구분
+                            if ma_timing == "데드크로스":
+                                reason = f"매도 조건 충족: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생"
+                            elif ma_timing == "데드구간":
+                                reason = f"매도 조건 충족: {ma_condition}{period_unit}이 {ma_period}{period_unit}보다 낮은 데드구간"
+                            else:
+                                reason = f"매도 조건 충족: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 조건 충족"
                     
                     trade_data = {
                         "trade_type": "USER" if ma_condition == "삭제됨" else "SELL",
@@ -1617,7 +1654,16 @@ class KRTrader(BaseTrader):
                     if ma_condition == "삭제됨":
                         msg += f"\n- 매도 사유: 구글 스프레드시트에서 종목이 삭제됨"
                     else:
-                        msg += f"\n- 매도 사유: 이동평균 하향돌파 (전일종가: {prev_close:,.0f}원 < {ma_period}일선: {ma_value:,.0f}원)"
+                        if ma_condition == "종가":
+                            msg += f"\n- 매도 사유: 이동평균 하향돌파 (전일종가: {prev_close:,.0f}원 < {ma_period}일선: {ma_value:,.0f}원)"
+                        else:
+                            # 데드크로스와 데드구간을 구분
+                            if ma_timing == "데드크로스":
+                                msg += f"\n- 매도 사유: {ma_condition}{period_unit}이 {ma_period}{period_unit}을 데드크로스"
+                            elif ma_timing == "데드구간":
+                                msg += f"\n- 매도 사유: {ma_condition}{period_unit}이 {ma_period}{period_unit}보다 낮은 데드구간"
+                            else:
+                                msg += f"\n- 매도 사유: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 조건 충족"
                     msg += f"\n- 매도 금액: {quantity * price:,.0f}원"
                     self.logger.info(msg)
                     

@@ -1139,7 +1139,13 @@ class USTrader(BaseTrader):
                     if ma_condition == "종가":
                         self.logger.info(f"{stock_name}({stock_code}) - 매도 조건 충족: 전일 종가 ${prev_close:.2f} < {ma_period}{period_unit} ${ma:.2f}")
                     else:
-                        self.logger.info(f"{stock_name}({stock_code}) - 매도 조건 충족: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생")
+                        # 데드크로스와 데드구간을 구분하여 메시지 출력
+                        if ma_timing == "데드크로스":
+                            self.logger.info(f"{stock_name}({stock_code}) - 매도 조건 충족: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생")
+                        elif ma_timing == "데드구간":
+                            self.logger.info(f"{stock_name}({stock_code}) - 매도 조건 충족: {ma_condition}{period_unit}이 {ma_period}{period_unit}보다 낮은 데드구간")
+                        else:
+                            self.logger.info(f"{stock_name}({stock_code}) - 매도 조건 충족: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 조건 충족")
                     
                     # 매도 시 지정가의 1% 낮게 설정하여 시장가처럼 거래
                     sell_price = current_price * 0.99
@@ -1153,7 +1159,13 @@ class USTrader(BaseTrader):
                         if ma_condition == "종가":
                             msg += f"\n- 매도 사유: {ma_period}{period_unit} 하향돌파 (전일 종가 ${prev_close:.2f} < MA ${ma:.2f})"
                         else:
-                            msg += f"\n- 매도 사유: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생"
+                            # 데드크로스와 데드구간을 구분하여 메시지 출력
+                            if ma_timing == "데드크로스":
+                                msg += f"\n- 매도 사유: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생"
+                            elif ma_timing == "데드구간":
+                                msg += f"\n- 매도 사유: {ma_condition}{period_unit}이 {ma_period}{period_unit}보다 낮은 데드구간"
+                            else:
+                                msg += f"\n- 매도 사유: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 조건 충족"
                         msg += f"\n- 매도 금액: ${current_price * quantity:,.2f} (현재가 ${current_price:.2f})"
                         
                         # 매수 평균가 가져오기
@@ -1170,7 +1182,13 @@ class USTrader(BaseTrader):
                         if ma_condition == "종가":
                             reason = f"매도 조건 충족: {ma_period}{period_unit} 하향돌파 (전일 종가 ${prev_close:.2f} < MA ${ma:.2f})"
                         else:
-                            reason = f"매도 조건 충족: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생"
+                            # 데드크로스와 데드구간을 구분
+                            if ma_timing == "데드크로스":
+                                reason = f"매도 조건 충족: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생"
+                            elif ma_timing == "데드구간":
+                                reason = f"매도 조건 충족: {ma_condition}{period_unit}이 {ma_period}{period_unit}보다 낮은 데드구간"
+                            else:
+                                reason = f"매도 조건 충족: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 조건 충족"
                         
                         trade_data = {
                             "trade_type": "SELL",
@@ -1453,7 +1471,13 @@ class USTrader(BaseTrader):
                 if ma_condition == "종가":
                     buy_msg += f": 전일 종가(${prev_close:.2f})가 {ma_period}{period_unit}(${ma:.2f})을 상향돌파"
                 else:
-                    buy_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 골든크로스"
+                    # 골든크로스와 골든구간을 구분하여 메시지 출력
+                    if ma_timing == "골든크로스":
+                        buy_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}을 골든크로스"
+                    elif ma_timing == "골든구간":
+                        buy_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}보다 높은 골든구간"
+                    else:
+                        buy_msg += f": {ma_condition}{period_unit}이 {ma_period}{period_unit}과의 조건 충족"
                 self.logger.info(buy_msg)
                 
                 # 최대 보유 종목 수 체크 (개별 종목과 POOL 종목 각각 체크)
@@ -1608,7 +1632,15 @@ class USTrader(BaseTrader):
                 if result:
                     msg = f"매수 주문 실행: {row['종목명']}({stock_code}) {buy_quantity}주"
                     period_unit = "일" if period_div_code == "D" else "주"
-                    msg += f"\n- 매수 사유: 이동평균 상향돌파 (전일종가: ${prev_close:.2f} > {ma_period}{period_unit}선: ${ma:.2f})"
+                    # 매수 사유 메시지 수정 - 골든크로스와 골든구간을 구분
+                    if ma_condition == "종가":
+                        msg += f"\n- 매수 사유: 이동평균 상향돌파 (전일종가: ${prev_close:.2f} > {ma_period}{period_unit}선: ${ma:.2f})"
+                    elif ma_timing == "골든크로스":
+                        msg += f"\n- 매수 사유: 골든크로스 발생 ({ma_condition}{period_unit}선이 {ma_period}{period_unit}선을 상향돌파)"
+                    elif ma_timing == "골든구간":
+                        msg += f"\n- 매수 사유: 골든구간 진입 ({ma_condition}{period_unit}선이 {ma_period}{period_unit}선보다 높음)"
+                    else:
+                        msg += f"\n- 매수 사유: 이동평균 조건 충족"
                     msg += f"\n- 매수 금액: ${buy_quantity * current_price:.2f}"
                     msg += f"\n- 배분 비율: {allocation_ratio*100:.1f}%"
                     self.logger.info(msg)
@@ -1623,7 +1655,13 @@ class USTrader(BaseTrader):
                     elif ma_condition == "트레일링스탑매도후재매수":
                         reason = f"TS 매도 후 재매수: 매수 조건 충족 & 전일 종가가 TS 매도가 이상 상승"
                     else:
-                        reason = f"매수 조건 충족: {ma_condition}{period_unit}선과 {ma_period}{period_unit}선의 골든크로스 발생"
+                        # 골든크로스와 골든구간을 구분
+                        if ma_timing == "골든크로스":
+                            reason = f"매수 조건 충족: {ma_condition}{period_unit}선과 {ma_period}{period_unit}선의 골든크로스 발생"
+                        elif ma_timing == "골든구간":
+                            reason = f"매수 조건 충족: {ma_condition}{period_unit}선이 {ma_period}{period_unit}선보다 높은 골든구간"
+                        else:
+                            reason = f"매수 조건 충족: {ma_condition}{period_unit}선과 {ma_period}{period_unit}선의 조건 충족"
                     
                     trade_data = {
                         "trade_type": "BUY",
