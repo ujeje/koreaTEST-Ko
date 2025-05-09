@@ -169,9 +169,27 @@ class KRTrader(BaseTrader):
         end_date = today.strftime("%Y%m%d")
         
         # 필요한 데이터 기간 계산
-        required_days = period * 2
-        required_weeks = period * 2
+        if period_div_code == "D": # 일별 데이터
+            # 최소 필요 데이터 포인트 수 (period + 2개 포인트가 필요: MA 계산 + 전전일, 전일)
+            min_data_points = period + 2
+            # 추가 여유를 위해 주말, 공휴일을 고려하여 30% 추가 (캘린더 일수) + 대체공휴일등 연휴를 고려하여 +10
+            required_days = int(min_data_points * 1.3) + 10
+        else: # 주간 데이터
+            # 주간 데이터는 캘린더 일수가 아닌 주 단위로 제공됨
+            # 필요한 주 수 (period) + 2개 (전전주, 전주)
+            required_weeks = period + 2
+            # 주 단위를 일수로 변환 (한 주는 최대 7일) + 대체공휴일등 연휴를 고려하여 +1
+            required_days = required_weeks * 7 + 1
+            
+            # API가 주간 데이터를 특정 시점(ex: 금요일)에 집계할 수 있으므로
+            # 현재 요일에 따라 필요한 날짜를 추가 보정
+            current_weekday = datetime.now().weekday()  # 0=월요일, 6=일요일
+            if current_weekday < 5:  # 월~금요일인 경우
+                # 금요일까지 도달하지 않았으므로 이번 주는 아직 데이터가 없을 수 있음
+                # 한 주 더 추가 (7일)
+                required_days += 7
         
+        # API 제한(100일)을 고려한 효율적인 데이터 조회
         if period_div_code == "D":
             # API 제한(100일)을 고려한 효율적인 데이터 조회
             if required_days <= 100:
@@ -279,7 +297,7 @@ class KRTrader(BaseTrader):
                 except Exception as e:
                     self.logger.error(f"{stock_code}: 일간 데이터 분할 조회 중 오류 발생 - {str(e)}")
                     return None
-                
+        
         elif period_div_code == "W":
             # API 제한(100개)을 고려한 효율적인 데이터 조회
             # 주간 데이터는 데이터 포인트가 적을 수 있지만, 긴 기간의 경우 100주를 초과할 수 있음
@@ -891,6 +909,8 @@ class KRTrader(BaseTrader):
                         self._rebalance_portfolio(balance)
                     else:
                         self.logger.error("계좌 잔고 조회 실패로 리밸런싱을 실행할 수 없습니다.")
+                else:
+                    self.logger.info("2. 리밸런싱 조건 불충족")
                 
                 # 3. 시가 매수 실행
                 self.logger.info("3. 시가 매수 실행")

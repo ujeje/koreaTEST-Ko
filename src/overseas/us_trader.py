@@ -186,15 +186,15 @@ class USTrader(BaseTrader):
             if period_div_code == "D": # 일별 데이터
                 # 최소 필요 데이터 포인트 수 (period + 2개 포인트가 필요: MA 계산 + 전전일, 전일)
                 min_data_points = period + 2
-                # 추가 여유를 위해 주말, 공휴일을 고려하여 30% 추가 (캘린더 일수)
-                required_days = int(min_data_points * 1.3)
+                # 추가 여유를 위해 주말, 공휴일을 고려하여 30% 추가 (캘린더 일수) + 대체공휴일등 연휴를 고려하여 +10
+                required_days = int(min_data_points * 1.3) + 10
                 
             else: # 주간 데이터
                 # 주간 데이터는 캘린더 일수가 아닌 주 단위로 제공됨
                 # 필요한 주 수 (period) + 2개 (전전주, 전주)
                 required_weeks = period + 2
-                # 주 단위를 일수로 변환 (한 주는 최대 7일)
-                required_days = required_weeks * 7
+                # 주 단위를 일수로 변환 (한 주는 최대 7일) + 대체공휴일등 연휴를 고려하여 +1
+                required_days = required_weeks * 7 + 1
                 
                 # API가 주간 데이터를 특정 시점(ex: 금요일)에 집계할 수 있으므로
                 # 현재 요일에 따라 필요한 날짜를 추가 보정
@@ -985,16 +985,19 @@ class USTrader(BaseTrader):
                     self.logger.error("계좌 잔고 조회 실패")
                     return
                 
-                
                 # 3-1. 매도 조건 처리
+                self.logger.info("1. 시가 매도 실행")
                 self._process_sell_conditions(balance)
                 
                 # 3-2. 리밸런싱 체크 및 실행
                 if self._is_rebalancing_day():
-                    self.logger.info("리밸런싱 실행")
+                    self.logger.info("2. 리밸런싱 실행")
                     self._rebalance_portfolio(balance)
+                else:
+                    self.logger.info("2. 리밸런싱 조건 불충족")
                 
                 # 3-3. 매수 조건 처리
+                self.logger.info("3. 시가 매수 실행")
                 self._process_buy_conditions(balance)
                 
                 self.market_open_executed = True
@@ -1605,19 +1608,7 @@ class USTrader(BaseTrader):
                 if result:
                     msg = f"매수 주문 실행: {row['종목명']}({stock_code}) {buy_quantity}주"
                     period_unit = "일" if period_div_code == "D" else "주"
-                    
-                    # 매수 사유를 조건별로 분기
-                    buy_reason = ""
-                    if ma_condition == "종가":
-                        buy_reason = f"이동평균 상향돌파 (전일종가: ${prev_close:.2f} > {ma_period}{period_unit}선: ${ma:.2f})"
-                    elif ma_condition == "정상매도후재매수":
-                        buy_reason = f"정상 매도 후 재매수 (전일종가: ${prev_close:.2f}가 이평선 위 & 정상 매도가 이상 상승)"
-                    elif ma_condition == "트레일링스탑매도후재매수":
-                        buy_reason = f"TS 매도 후 재매수 (매수 조건 충족 & 전일종가가 TS 매도가 이상 상승)"
-                    else:
-                        buy_reason = f"{ma_condition}{period_unit}선과 {ma_period}{period_unit}선의 골든크로스 발생"
-                    
-                    msg += f"\n- 매수 사유: {buy_reason}"
+                    msg += f"\n- 매수 사유: 이동평균 상향돌파 (전일종가: ${prev_close:.2f} > {ma_period}{period_unit}선: ${ma:.2f})"
                     msg += f"\n- 매수 금액: ${buy_quantity * current_price:.2f}"
                     msg += f"\n- 배분 비율: {allocation_ratio*100:.1f}%"
                     self.logger.info(msg)
