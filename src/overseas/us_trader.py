@@ -994,7 +994,7 @@ class USTrader(BaseTrader):
                     self.logger.info("2. 리밸런싱 실행")
                     self._rebalance_portfolio(balance)
                 else:
-                    self.logger.info("2. 리밸런싱 조건 불충족")
+                    self.logger.info("2. 리밸런싱 조건 미충족")
                 
                 # 3-3. 매수 조건 처리
                 self.logger.info("3. 시가 매수 실행")
