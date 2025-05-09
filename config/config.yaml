@@ -70,7 +70,7 @@ trading:
   is_test_mode: false               # 테스트 모드 여부 (true: 항상 장 시작으로 간주, false: 실제 시간 기준 장 시작 확인)
   market:
     type: ['KOR']                    # 거래 시장 설정 (KOR: 한국, USA: 미국)  type: ['KOR', 'USA']
-  kor_market_start: '1407'           # 한국 장 시작 시간 (HHMM)  09:00
+  kor_market_start: '1206'           # 한국 장 시작 시간 (HHMM)  09:00
   kor_market_end: '1530'             # 한국 장 종료 시간 (HHMM)
   usa_market_start: '1500'          # 미국 장 시작 시간 (미국 현지 시간, HHMM)  09:30
   usa_market_end: '1600'             # 미국 장 종료 시간 (미국 현지 시간, HHMM)

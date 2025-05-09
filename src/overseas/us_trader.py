@@ -504,7 +504,8 @@ class USTrader(BaseTrader):
             return 0
     
     def check_buy_condition(self, stock_code: str, ma_period: int, prev_close: float, 
-                           ma_condition: str = "종가", period_div_code: str = "D") -> tuple[bool, Optional[float]]:
+                           ma_condition: str = "종가", period_div_code: str = "D",
+                           ma_timing: str = "골든구간") -> tuple[bool, Optional[float]]:
         """매수 조건을 확인합니다.
         
         Args:
@@ -513,6 +514,7 @@ class USTrader(BaseTrader):
             prev_close (float): 전일 종가
             ma_condition (str): 매수 조건 ("종가" 또는 이평선 기간)
             period_div_code (str): 기간 구분 코드 (D: 일봉, W: 주봉)
+            ma_timing (str): 매수 타이밍 ("골든크로스" 또는 "골든구간")
         
         Returns:
             tuple[bool, Optional[float]]: (매수 조건 충족 여부, 이동평균값)
@@ -527,18 +529,16 @@ class USTrader(BaseTrader):
             # 전전일과 전일 이동평균값 추출
             ma_target_prev2, ma_target_prev = ma_target_values
             
-            # "종가" 조건: 전일 종가가 이동평균선 상향 돌파
+            # 기간 단위 설정
+            period_unit = "일" if period_div_code == "D" else "주"
+            
+            # "종가" 조건일 경우: 매수타이밍에 상관없이 전일 종가가 이동평균선 위에 있는지만 확인
             if ma_condition == "종가":
-                # 전일 종가가 이동평균선을 상향 돌파했는지 확인
-                # 즉, prev_close > ma_target_prev
                 is_buy = prev_close > ma_target_prev
                 if is_buy:
-                    # 일/주 구분
-                    period_unit = "일" if period_div_code == "D" else "주"
-                    self.logger.info(f"매수 조건 충족: {stock_code} - 전일 종가(${prev_close:.2f})가 {ma_period}{period_unit}선(${ma_target_prev:.2f})을 상향돌파")
+                    self.logger.info(f"매수 조건 충족: {stock_code} - 전일 종가(${prev_close:.2f})가 {ma_period}{period_unit}선(${ma_target_prev:.2f}) 위에 있음")
                 return is_buy, ma_target_prev
-            
-            # 골든크로스 조건: ma_condition에 지정된 이평선이 기준 이평선을 상향 돌파
+            # 이평선 조건일 경우: 매수타이밍에 따라 다르게 처리
             else:
                 try:
                     # 조건으로 지정된 이평선 기간을 정수로 변환
@@ -552,20 +552,35 @@ class USTrader(BaseTrader):
                     # 전전일과 전일 이동평균값 추출
                     ma_condition_prev2, ma_condition_prev = ma_condition_values
                     
-                    # 골든크로스 조건 확인
-                    # 전전일: 조건 이평선 < 기준 이평선
-                    # 전일: 조건 이평선 > 기준 이평선
-                    golden_cross = (ma_condition_prev2 < ma_target_prev2) and (ma_condition_prev > ma_target_prev)
+                    # 매수 타이밍에 따라 다르게 처리
+                    if ma_timing == "골든구간":
+                        # 매수조건선이 매수기준선 위에 있는지 확인
+                        is_above = ma_condition_prev > ma_target_prev
+                        
+                        if is_above:
+                            self.logger.info(f"매수 조건 충족: {stock_code}")
+                            self.logger.info(f"- 전일: {condition_period}{period_unit}선(${ma_condition_prev:.2f}) > {ma_period}{period_unit}선(${ma_target_prev:.2f})")
+                        
+                        return is_above, ma_target_prev
                     
-                    if golden_cross:
-                        # 일/주 구분
-                        period_unit = "일" if period_div_code == "D" else "주"
-                        self.logger.info(f"골든크로스 발생: {stock_code}")
-                        self.logger.info(f"- 전전{period_unit}: {condition_period}{period_unit}선(${ma_condition_prev2:.2f}) < {ma_period}{period_unit}선(${ma_target_prev2:.2f})")
-                        self.logger.info(f"- 전{period_unit}: {condition_period}{period_unit}선(${ma_condition_prev:.2f}) > {ma_period}{period_unit}선(${ma_target_prev:.2f})")
+                    elif ma_timing == "골든크로스":
+                        # 골든크로스 조건 확인
+                        # 전전일: 조건 이평선 < 기준 이평선
+                        # 전일: 조건 이평선 > 기준 이평선
+                        golden_cross = (ma_condition_prev2 < ma_target_prev2) and (ma_condition_prev > ma_target_prev)
+                        
+                        if golden_cross:
+                            self.logger.info(f"골든크로스 발생: {stock_code}")
+                            self.logger.info(f"- 전전{period_unit}: {condition_period}{period_unit}선(${ma_condition_prev2:.2f}) < {ma_period}{period_unit}선(${ma_target_prev2:.2f})")
+                            self.logger.info(f"- 전{period_unit}: {condition_period}{period_unit}선(${ma_condition_prev:.2f}) > {ma_period}{period_unit}선(${ma_target_prev:.2f})")
+                        
+                        return golden_cross, ma_target_prev
                     
-                    return golden_cross, ma_target_prev
-                    
+                    # 지원되지 않는 매수 타이밍
+                    else:
+                        self.logger.error(f"지원되지 않는 매수 타이밍: {ma_timing}")
+                        return False, ma_target_prev
+                        
                 except (ValueError, TypeError):
                     self.logger.error(f"매수 조건 확인 중 오류: {ma_condition}이 유효한 이평선 기간이 아닙니다.")
                     return False, ma_target_prev
@@ -575,7 +590,8 @@ class USTrader(BaseTrader):
             return False, None
     
     def check_sell_condition(self, stock_code: str, ma_period: int, prev_close: float, 
-                            ma_condition: str = "종가", period_div_code: str = "D") -> tuple[bool, Optional[float]]:
+                            ma_condition: str = "종가", period_div_code: str = "D",
+                            ma_timing: str = "데드구간") -> tuple[bool, Optional[float]]:
         """매도 조건을 확인합니다.
         
         Args:
@@ -584,6 +600,7 @@ class USTrader(BaseTrader):
             prev_close (float): 전일 종가
             ma_condition (str): 매도 조건 ("종가" 또는 이평선 기간)
             period_div_code (str): 기간 구분 코드 (D: 일봉, W: 주봉)
+            ma_timing (str): 매수 타이밍에 따른 매도 조건 ("데드크로스" 또는 "데드구간")
         
         Returns:
             tuple[bool, Optional[float]]: (매도 조건 충족 여부, 이동평균값)
@@ -598,17 +615,16 @@ class USTrader(BaseTrader):
             # 전전일과 전일 이동평균값 추출
             ma_target_prev2, ma_target_prev = ma_target_values
             
-            # "종가" 조건: 전일 종가가 이동평균선 하향 돌파
+            # 기간 단위 설정
+            period_unit = "일" if period_div_code == "D" else "주"
+            
+            # "종가" 조건일 경우: 매도타이밍에 상관없이 전일 종가가 이동평균선 아래에 있는지만 확인
             if ma_condition == "종가":
-                # 전일 종가가 이동평균선 아래에 있는지 확인
-                # 즉, prev_close < ma_target_prev
                 is_sell = prev_close < ma_target_prev
                 if is_sell:
-                    period_unit = "일" if period_div_code == "D" else "주"
-                    self.logger.info(f"매도 조건 충족: {stock_code} - 전일 종가(${prev_close:.2f})가 {ma_period}{period_unit}선(${ma_target_prev:.2f}) 아래로 하향돌파")
+                    self.logger.info(f"매도 조건 충족: {stock_code} - 전일 종가(${prev_close:.2f})가 {ma_period}{period_unit}선(${ma_target_prev:.2f}) 아래에 있음")
                 return is_sell, ma_target_prev
-            
-            # 데드크로스 조건: ma_condition에 지정된 이평선이 기준 이평선을 하향 돌파
+            # 이평선 조건일 경우: 매도타이밍에 따라 다르게 처리
             else:
                 try:
                     # 조건으로 지정된 이평선 기간을 정수로 변환
@@ -622,24 +638,39 @@ class USTrader(BaseTrader):
                     # 전전일과 전일 이동평균값 추출
                     ma_condition_prev2, ma_condition_prev = ma_condition_values
                     
-                    # 데드크로스 조건 확인
-                    # 전전일: 조건 이평선 > 기준 이평선
-                    # 전일: 조건 이평선 < 기준 이평선
-                    dead_cross = (ma_condition_prev2 > ma_target_prev2) and (ma_condition_prev < ma_target_prev)
+                    # 매도 타이밍에 따라 다르게 처리
+                    if ma_timing == "데드구간":
+                        # 매수조건선이 매수기준선 아래에 있는지 확인
+                        is_below = ma_condition_prev < ma_target_prev
+                        
+                        if is_below:
+                            self.logger.info(f"매도 조건 충족: {stock_code}")
+                            self.logger.info(f"- 전일: {condition_period}{period_unit}선(${ma_condition_prev:.2f}) < {ma_period}{period_unit}선(${ma_target_prev:.2f})")
+                        
+                        return is_below, ma_target_prev
                     
-                    if dead_cross:
-                        # 일/주 구분
-                        period_unit = "일" if period_div_code == "D" else "주"
-                        self.logger.info(f"데드크로스 발생: {stock_code}")
-                        self.logger.info(f"- 전전{period_unit}: {condition_period}{period_unit}선(${ma_condition_prev2:.2f}) > {ma_period}{period_unit}선(${ma_target_prev2:.2f})")
-                        self.logger.info(f"- 전{period_unit}: {condition_period}{period_unit}선(${ma_condition_prev:.2f}) < {ma_period}{period_unit}선(${ma_target_prev:.2f})")
+                    elif ma_timing == "데드크로스":
+                        # 데드크로스 조건 확인
+                        # 전전일: 조건 이평선 > 기준 이평선
+                        # 전일: 조건 이평선 < 기준 이평선
+                        dead_cross = (ma_condition_prev2 > ma_target_prev2) and (ma_condition_prev < ma_target_prev)
+                        
+                        if dead_cross:
+                            self.logger.info(f"데드크로스 발생: {stock_code}")
+                            self.logger.info(f"- 전전{period_unit}: {condition_period}{period_unit}선(${ma_condition_prev2:.2f}) > {ma_period}{period_unit}선(${ma_target_prev2:.2f})")
+                            self.logger.info(f"- 전{period_unit}: {condition_period}{period_unit}선(${ma_condition_prev:.2f}) < {ma_period}{period_unit}선(${ma_target_prev:.2f})")
+                        
+                        return dead_cross, ma_target_prev
                     
-                    return dead_cross, ma_target_prev
-                    
+                    # 지원되지 않는 매수 타이밍
+                    else:
+                        self.logger.error(f"지원되지 않는 매수 타이밍: {ma_timing}")
+                        return False, ma_target_prev
+                        
                 except (ValueError, TypeError):
                     self.logger.error(f"매도 조건 확인 중 오류: {ma_condition}이 유효한 이평선 기간이 아닙니다.")
                     return False, ma_target_prev
-                
+            
         except Exception as e:
             self.logger.error(f"매도 조건 확인 중 오류 발생 ({stock_code}): {str(e)}")
             return False, None
@@ -867,14 +898,14 @@ class USTrader(BaseTrader):
                             
                             # 거래 내역 저장
                             trade_data = {
-                                "trade_type": "REBALANCE_BUY",
+                                "trade_type": "REBALANCE",
                                 "trade_action": "BUY",
                                 "stock_code": stock_code,
                                 "stock_name": info['name'],
                                 "quantity": quantity_diff,
-                                "price": info['current_price'],
+                                "price": buy_price,
                                 "total_amount": abs(value_diff),
-                                "reason": f"리밸런싱 매수 (현재 비중 {info['current_ratio']:.1f}% → 목표 비중: {info['target_ratio']:.1f}%)",
+                                "reason": f"리밸런싱 매수: 비중 조정 {info['current_ratio']:.1f}% → {info['target_ratio']:.1f}%",
                                 "order_type": "BUY"
                             }
                             self.trade_history.add_trade(trade_data)
@@ -899,16 +930,15 @@ class USTrader(BaseTrader):
                             
                             # 거래 내역 저장
                             trade_data = {
-                                "trade_type": "REBALANCE_SELL",
+                                "trade_type": "REBALANCE",
                                 "trade_action": "SELL",
                                 "stock_code": stock_code,
                                 "stock_name": info['name'],
                                 "quantity": abs(quantity_diff),
-                                "price": info['current_price'],
+                                "price": sell_price,
                                 "total_amount": abs(value_diff),
-                                "reason": f"리밸런싱 매도 (현재 비중 {info['current_ratio']:.1f}% → 목표 비중: {info['target_ratio']:.1f}%)",
-                                "profit_loss": (info['current_price'] - info['current_price']) * abs(quantity_diff),
-                                "profit_loss_pct": 0.0
+                                "reason": f"리밸런싱 매도: 비중 조정 {info['current_ratio']:.1f}% → {info['target_ratio']:.1f}%",
+                                "order_type": "SELL"
                             }
                             self.trade_history.add_trade(trade_data)
                             
@@ -1065,6 +1095,7 @@ class USTrader(BaseTrader):
                         ma_period = int(row['매도기준'])
                         ma_condition = row.get('매도조건', '종가')
                         period_div_code = row.get('매도기준2', '일')
+                        ma_timing = row.get('매도타이밍', '데드구간')  # 매도타이밍 값 사용
                         period_div_code = "D" if period_div_code == "일" else "W"
                         break
                 
@@ -1075,6 +1106,7 @@ class USTrader(BaseTrader):
                             ma_period = int(row['매도기준'])
                             ma_condition = row.get('매도조건', '종가')
                             period_div_code = row.get('매도기준2', '주')
+                            ma_timing = row.get('매도타이밍', '데드구간')  # 매도타이밍 값 사용
                             period_div_code = "D" if period_div_code == "일" else "W"
                             break
                 
@@ -1092,7 +1124,7 @@ class USTrader(BaseTrader):
                 prev_close = float(current_price_data['output']['base'])
                 
                 # 매도 조건 확인 - 전일 종가를 기준으로 판단
-                sell_condition, ma = self.check_sell_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
+                sell_condition, ma = self.check_sell_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code, ma_timing)
                 
                 if ma is None:
                     self.logger.warning(f"{stock_name}({stock_code})의 이동평균을 계산할 수 없습니다.")
@@ -1100,7 +1132,11 @@ class USTrader(BaseTrader):
                     
                 if sell_condition:
                     period_unit = "일선" if period_div_code == "D" else "주선"
-                    self.logger.info(f"{stock_name}({stock_code}) - 매도 조건 충족: 전일 종가 ${prev_close:.2f} < MA{ma_period} ${ma:.2f}")
+                    # 매도 조건을 매도조건(ma_condition)에 따라 다르게 표시
+                    if ma_condition == "종가":
+                        self.logger.info(f"{stock_name}({stock_code}) - 매도 조건 충족: 전일 종가 ${prev_close:.2f} < {ma_period}{period_unit} ${ma:.2f}")
+                    else:
+                        self.logger.info(f"{stock_name}({stock_code}) - 매도 조건 충족: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생")
                     
                     # 매도 시 지정가의 1% 낮게 설정하여 시장가처럼 거래
                     sell_price = current_price * 0.99
@@ -1110,7 +1146,11 @@ class USTrader(BaseTrader):
                     
                     if result:
                         msg = f"매도 주문 실행: {stock_name} {quantity}주 (지정가)"
-                        msg += f"\n- 매도 사유: {ma_period}일선 매도 조건 충족 (전일 종가 ${prev_close:.2f} < MA ${ma:.2f})"
+                        # 매도 이유를 매도조건(ma_condition)에 따라 다르게 표시
+                        if ma_condition == "종가":
+                            msg += f"\n- 매도 사유: {ma_period}{period_unit} 하향돌파 (전일 종가 ${prev_close:.2f} < MA ${ma:.2f})"
+                        else:
+                            msg += f"\n- 매도 사유: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생"
                         msg += f"\n- 매도 금액: ${current_price * quantity:,.2f} (현재가 ${current_price:.2f})"
                         
                         # 매수 평균가 가져오기
@@ -1123,6 +1163,12 @@ class USTrader(BaseTrader):
                         self.logger.info(msg)
                         
                         # 거래 내역 저장
+                        reason = ""
+                        if ma_condition == "종가":
+                            reason = f"매도 조건 충족: {ma_period}{period_unit} 하향돌파 (전일 종가 ${prev_close:.2f} < MA ${ma:.2f})"
+                        else:
+                            reason = f"매도 조건 충족: {ma_condition}{period_unit}과 {ma_period}{period_unit}의 데드크로스 발생"
+                        
                         trade_data = {
                             "trade_type": "SELL",
                             "trade_action": "SELL",
@@ -1135,7 +1181,7 @@ class USTrader(BaseTrader):
                             "ma_value": ma,
                             "ma_condition": ma_condition,
                             "period_div_code": period_div_code,
-                            "reason": f"{period_div_code}봉 기준 {ma_condition} {ma_period}{period_unit} 매도 조건 충족 (전일 종가 ${prev_close:.2f} < MA ${ma:.2f})",
+                            "reason": reason,
                             "profit_loss": (current_price - avg_price) * quantity,
                             "profit_loss_pct": (current_price - avg_price) / avg_price * 100
                         }
@@ -1170,6 +1216,7 @@ class USTrader(BaseTrader):
             stock_code = f"{row['종목코드']}.{row['거래소']}"
             ma_period = int(row['매수기준']) if row['매수기준'] and str(row['매수기준']).strip() != '' else 20
             ma_condition = row.get('매수조건', '종가')  # 기본값은 '종가'
+            ma_timing = row.get('매수타이밍', '골든구간')  # 기본값은 '골든구간'
             allocation_ratio = float(row['배분비율']) / 100 if row['배분비율'] and str(row['배분비율']).strip() != '' else 0.1
             
             # 종목 유형에 따라 일간/주간 데이터 사용
@@ -1248,7 +1295,7 @@ class USTrader(BaseTrader):
                 self.logger.info(f"{row['종목명']}({stock_code}) - 마지막 TS 매도 날짜: {ts_sell_date}")
                 
                 # 매수 조건 체크를 통해 정확한 이평선 값 얻기
-                should_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
+                should_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code, ma_timing)
                 
                 if ma_value is None:
                     self.logger.error(f"{row['종목명']}({stock_code}) - {ma_period}{period_unit} 계산 실패")
@@ -1302,7 +1349,7 @@ class USTrader(BaseTrader):
                                     "ma_value": ma_value,
                                     "ma_condition": "트레일링스탑매도후재매수",
                                     "period_div_code": period_div_code,
-                                    "reason": f"트레일링 스탑 매도 후 재매수 조건 충족 ({price_period} 종가 ${prev_close:.2f} > TS 매도가 ${trailing_stop_price:.2f})"
+                                    "reason": f"TS 매도 후 재매수: {price_period} 종가 ${prev_close:.2f} > TS 매도가 ${trailing_stop_price:.2f}"
                                 }
                                 self.trade_history.add_trade(trade_data)
                             
@@ -1327,7 +1374,7 @@ class USTrader(BaseTrader):
             last_normal_sell_price = self.get_last_normal_sell_price(stock_code.split('.')[0])
             if last_normal_sell_price is not None:
                 # 매수 조건 체크를 통해 정확한 이평선 값 얻기
-                should_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
+                should_buy, ma_value = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code, ma_timing)
                 
                 # 수정된 조건: 전일 종가가 이평선 위에 있고 직전 정상 매도가보다 높으면 즉시 재매수
                 if ma_value is not None:
@@ -1387,7 +1434,7 @@ class USTrader(BaseTrader):
                             self.logger.info(f"{row['종목명']}({stock_code}) - 추가 매수 수량이 0 또는 음수")
             
             # 매수 조건 체크
-            should_buy, ma = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code)
+            should_buy, ma = self.check_buy_condition(stock_code, ma_period, prev_close, ma_condition, period_div_code, ma_timing)
             
             if should_buy and ma is not None:
                 # 당일 매도 종목 체크
@@ -1506,7 +1553,7 @@ class USTrader(BaseTrader):
                                 "quantity": sell_quantity,
                                 "price": pool_stock['price'],
                                 "total_amount": expected_cash,
-                                "reason": f"현금 확보를 위한 POOL 종목 매도 (개별 종목 {row['종목명']} 매수 자금 확보)"
+                                "reason": f"현금 확보 매도: 개별 종목 {row['종목명']} 매수 자금 확보를 위한 POOL 종목 매도"
                             }
                             self.trade_history.add_trade(trade_data)
                             
@@ -1558,12 +1605,35 @@ class USTrader(BaseTrader):
                 if result:
                     msg = f"매수 주문 실행: {row['종목명']}({stock_code}) {buy_quantity}주"
                     period_unit = "일" if period_div_code == "D" else "주"
-                    msg += f"\n- 매수 사유: 이동평균 상향돌파 (전일종가: ${prev_close:.2f} > {ma_period}{period_unit}선: ${ma:.2f})"
+                    
+                    # 매수 사유를 조건별로 분기
+                    buy_reason = ""
+                    if ma_condition == "종가":
+                        buy_reason = f"이동평균 상향돌파 (전일종가: ${prev_close:.2f} > {ma_period}{period_unit}선: ${ma:.2f})"
+                    elif ma_condition == "정상매도후재매수":
+                        buy_reason = f"정상 매도 후 재매수 (전일종가: ${prev_close:.2f}가 이평선 위 & 정상 매도가 이상 상승)"
+                    elif ma_condition == "트레일링스탑매도후재매수":
+                        buy_reason = f"TS 매도 후 재매수 (매수 조건 충족 & 전일종가가 TS 매도가 이상 상승)"
+                    else:
+                        buy_reason = f"{ma_condition}{period_unit}선과 {ma_period}{period_unit}선의 골든크로스 발생"
+                    
+                    msg += f"\n- 매수 사유: {buy_reason}"
                     msg += f"\n- 매수 금액: ${buy_quantity * current_price:.2f}"
                     msg += f"\n- 배분 비율: {allocation_ratio*100:.1f}%"
                     self.logger.info(msg)
                     
                     # 거래 내역 저장
+                    # reason 메시지를 조건별로 분기
+                    reason = ""
+                    if ma_condition == "종가":
+                        reason = f"매수 조건 충족: {ma_period}{period_unit}선 상향돌파 (전일 종가 ${prev_close:.2f} > MA ${ma:.2f})"
+                    elif ma_condition == "정상매도후재매수":
+                        reason = f"정상 매도 후 재매수: 전일 종가(${prev_close:.2f})가 이평선 위 & 정상 매도가 이상 상승"
+                    elif ma_condition == "트레일링스탑매도후재매수":
+                        reason = f"TS 매도 후 재매수: 매수 조건 충족 & 전일 종가가 TS 매도가 이상 상승"
+                    else:
+                        reason = f"매수 조건 충족: {ma_condition}{period_unit}선과 {ma_period}{period_unit}선의 골든크로스 발생"
+                    
                     trade_data = {
                         "trade_type": "BUY",
                         "trade_action": "BUY",
@@ -1576,7 +1646,7 @@ class USTrader(BaseTrader):
                         "ma_value": ma,
                         "ma_condition": ma_condition,
                         "period_div_code": period_div_code,
-                        "reason": f"{period_div_code}봉 기준 {ma_condition} {ma_period}{period_unit}선 매수 조건 충족",
+                        "reason": reason,
                         "order_type": "BUY"
                     }
                     self.trade_history.add_trade(trade_data)
@@ -1662,7 +1732,7 @@ class USTrader(BaseTrader):
                         "quantity": quantity,
                         "price": current_price,
                         "total_amount": quantity * current_price,
-                        "reason": f"스탑로스 조건 충족 (손실률 {loss_pct:.2f}% <= {self.settings['stop_loss']}%)",
+                        "reason": f"스탑로스 매도: 손실률 {loss_pct:.2f}% (스탑로스 기준 {self.settings['stop_loss']}%)",
                         "profit_loss": (current_price - entry_price) * quantity,
                         "profit_loss_pct": loss_pct
                     }
@@ -1733,7 +1803,7 @@ class USTrader(BaseTrader):
                                 "quantity": quantity,
                                 "price": current_price,
                                 "total_amount": quantity * current_price,
-                                "reason": f"트레일링 스탑 조건 충족 (고점 ${highest_price:.2f} 대비 하락률 {drop_pct:.3f}% <= {self.settings['trailing_stop']}%)",
+                                "reason": f"트레일링 스탑 매도: 고점 ${highest_price:.2f} 대비 하락률 {drop_pct:.2f}% 도달 (트레일링 스탑 기준 {self.settings['trailing_stop']}%)",
                                 "profit_loss": (current_price - entry_price) * quantity,
                                 "profit_loss_pct": (current_price - entry_price) / entry_price * 100
                             }
