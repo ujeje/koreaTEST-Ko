@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timedelta
 import requests
 from typing import Dict, Optional
+from src.utils.network_utils import get_public_ip, generate_global_uid
 
 class TokenManager:
     """한국투자증권 API 토큰 관리자"""
@@ -28,6 +29,8 @@ class TokenManager:
             
             # 모의투자 여부에 따라 설정
             self.is_paper_trading = self.config['api']['is_paper_trading']
+            self.account_type = self.config['api']['account_type']  # 개인/법인 구분
+
             if self.is_paper_trading:
                 self.base_url = self.config['api']['paper']['url']
                 self.api_key = self.config['api']['paper']['key']
@@ -38,6 +41,13 @@ class TokenManager:
                 self.api_key = self.config['api']['real']['key']
                 self.api_secret = self.config['api']['real']['secret']
                 self.account_no = self.config['api']['real']['account']
+                
+            # 법인계좌 관련 설정
+            if self.account_type == "C":  # C: 법인
+                self.customer_identification_key = self.config['api']['real']['corporate']['customer_identification_key']
+                self.ip_address = get_public_ip()
+                self.global_uid = generate_global_uid(self.customer_identification_key)
+                self.phone_number = self.config['api']['real']['corporate']['phone_number']
             
             self.access_token = None
             self.token_expired_time = None
@@ -74,6 +84,17 @@ class TokenManager:
         headers = {
             "content-type": "application/json"
         }
+        
+        # 법인계좌인 경우 추가 헤더 설정
+        if self.account_type == "C":  # C: 법인
+            headers.update({
+                "custtype": "B",  # B: 법인
+                "hashkey": self.customer_identification_key,
+                "ipaddr": self.ip_address,
+                "globaluid": self.global_uid,
+                "phone_number": self.phone_number,
+                "seq_no": "001"  # 법인계좌 필수값
+            })
         
         self.last_token_request = time.time()
         response = requests.post(url, headers=headers, data=json.dumps(data))

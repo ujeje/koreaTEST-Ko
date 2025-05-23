@@ -1,6 +1,7 @@
 # 한국투자증권 API 설정
 api:
   is_paper_trading: true                                   # 모의투자 여부 (true: 모의투자, false: 실전투자)
+  account_type: "P"                                        # 계좌 유형 (P: 개인, C: 법인)
   
   # 실전투자 설정 (병인)
   real:
@@ -8,6 +9,10 @@ api:
     secret: "2G0ITCDo/8zUgHgEnQci47qj4R5rMJkqWhC11Kqknwdp6yHXzK7WQpSrliJhlYJPyIn8zRFu1bZcEQ+Mbi10+ov3b6CkcqQU3et3HRnLh3uTQqAjGbaL13JAMcv67yuLX3M7362BqSF9iL773vG/tNx5Yh5yypc103I6Vu4TzIcz+RR9z7g="  # 실전투자 API Secret
     account: "7468442901"                                 # 실전투자 계좌번호
     url: "https://openapi.koreainvestment.com:9443"      # 실전투자 서버 주소
+    corporate:
+      customer_identification_key: "DS01"             # 고객식별키 (4자리만)
+      ip_address: ""                                     # 접속단말공인IP (자동 설정됨)
+      phone_number: "01090179550"                       # 휴대폰 번호 (법인계좌 필수)
   
   # 실전투자 설정 (부회장님-미장)
   # real:
@@ -70,9 +75,9 @@ trading:
   is_test_mode: false               # 테스트 모드 여부 (true: 항상 장 시작으로 간주, false: 실제 시간 기준 장 시작 확인)
   market:
     type: ['USA']                    # 거래 시장 설정 (KOR: 한국, USA: 미국)  type: ['KOR', 'USA']
-  kor_market_start: '1417'           # 한국 장 시작 시간 (HHMM)  09:00
+  kor_market_start: '0953'           # 한국 장 시작 시간 (HHMM)  09:00
   kor_market_end: '1530'             # 한국 장 종료 시간 (HHMM)
-  usa_market_start: '1414'          # 미국 장 시작 시간 (미국 현지 시간, HHMM)  09:30
+  usa_market_start: '1447'          # 미국 장 시작 시간 (미국 현지 시간, HHMM)  09:30
   usa_market_end: '1600'             # 미국 장 종료 시간 (미국 현지 시간, HHMM)
 
 # 로깅 설정

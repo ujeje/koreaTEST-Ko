@@ -28,6 +28,8 @@ class KISKRAPIManager:
         
         # 실전/모의투자 설정
         self.is_paper_trading = self.config['api']['is_paper_trading']
+        self.account_type = self.config['api']['account_type']  # 개인/법인 구분
+        
         if self.is_paper_trading:
             self.base_url = self.config['api']['paper']['url']
             self.api_key = self.config['api']['paper']['key']
@@ -39,7 +41,38 @@ class KISKRAPIManager:
             self.api_secret = self.config['api']['real']['secret']
             self.account_no = self.config['api']['real']['account']
         
-        self.logger.info(f"국내주식 API 매니저 초기화 완료 (모의투자: {self.is_paper_trading})")
+        self.logger.info(f"국내주식 API 매니저 초기화 완료 (모의투자: {self.is_paper_trading}, 계좌유형: {self.account_type})")
+    
+    def _get_headers(self, tr_id: str) -> Dict:
+        """API 요청에 사용할 헤더를 생성합니다.
+        
+        Args:
+            tr_id (str): TR ID
+            
+        Returns:
+            Dict: API 요청 헤더
+        """
+        access_token = self._check_token()
+        
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "authorization": f"Bearer {access_token}",
+            "appkey": self.api_key,
+            "appsecret": self.api_secret,
+            "tr_id": tr_id
+        }
+        
+        # 법인계좌인 경우 추가 헤더 설정
+        if self.account_type == "C":  # C: 법인
+            headers.update({
+                "custtype": "B",  # B: 법인
+                "hashkey": self.token_manager.customer_identification_key,
+                "ipaddr": self.token_manager.ip_address,
+                "globaluid": self.token_manager.global_uid,
+                "phone_number": self.token_manager.phone_number
+            })
+        
+        return headers
     
     def _check_token(self) -> str:
         """토큰의 유효성을 확인하고 필요시 갱신합니다."""
@@ -47,16 +80,8 @@ class KISKRAPIManager:
     
     def get_stock_price(self, stock_code: str) -> Optional[Dict]:
         """주식 현재가 정보를 조회합니다."""
-        access_token = self._check_token()
-        
         url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-price"
-        headers = {
-            "Content-Type": "application/json",
-            "authorization": f"Bearer {access_token}",
-            "appkey": self.api_key,
-            "appsecret": self.api_secret,
-            "tr_id": "FHKST01010100"
-        }
+        headers = self._get_headers("FHKST01010100")
         
         params = {
             "FID_COND_MRKT_DIV_CODE": "J",
@@ -109,13 +134,7 @@ class KISKRAPIManager:
         access_token = self._check_token()
         
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {access_token}",
-            "appkey": self.api_key,
-            "appsecret": self.api_secret,
-            "tr_id": "VTTC8001R" if self.is_paper_trading else "TTTC8001R"  # 모의/실전 구분
-        }
+        headers = self._get_headers("VTTC8001R" if self.is_paper_trading else "TTTC8001R")
         
         params = {
             "CANO": self.account_no[:8],                          # 종합계좌번호
@@ -216,13 +235,7 @@ class KISKRAPIManager:
         access_token = self._check_token()
         
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {access_token}",
-            "appkey": self.api_key,
-            "appsecret": self.api_secret,
-            "tr_id": "VTTC8434R" if self.is_paper_trading else "TTTC8434R"  # 모의/실전 구분
-        }
+        headers = self._get_headers("VTTC8434R" if self.is_paper_trading else "TTTC8434R")
         
         params = {
             "CANO": self.account_no[:8],
@@ -323,13 +336,7 @@ class KISKRAPIManager:
         access_token = self._check_token()
         
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-psbl-order"
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {access_token}",
-            "appkey": self.api_key,
-            "appsecret": self.api_secret,
-            "tr_id": "VTTC8908R" if self.is_paper_trading else "TTTC8908R"  # 모의/실전 구분
-        }
+        headers = self._get_headers("VTTC8908R" if self.is_paper_trading else "TTTC8908R")
         
         params = {
             "CANO": self.account_no[:8],
@@ -381,13 +388,7 @@ class KISKRAPIManager:
         else:
             tr_id = "TTTC0802U" if order_type == "BUY" else "TTTC0801U"
             
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {access_token}",
-            "appkey": self.api_key,
-            "appsecret": self.api_secret,
-            "tr_id": tr_id
-        }
+        headers = self._get_headers(tr_id)
         
         data = {
             "CANO": self.account_no[:8],
@@ -429,13 +430,7 @@ class KISKRAPIManager:
             access_token = self._check_token()
             
             url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
-            headers = {
-                "Content-Type": "application/json; charset=utf-8",
-                "authorization": f"Bearer {access_token}",
-                "appkey": self.api_key,
-                "appsecret": self.api_secret,
-                "tr_id": "FHKST03010100"
-            }
+            headers = self._get_headers("FHKST03010100")
             
             params = {
                 "FID_COND_MRKT_DIV_CODE": "J",
@@ -501,14 +496,7 @@ class KISKRAPIManager:
             access_token = self._check_token()
             
             url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/chk-holiday"
-            headers = {
-                "Content-Type": "application/json; charset=utf-8",
-                "authorization": f"Bearer {access_token}",
-                "appkey": self.api_key,
-                "appsecret": self.api_secret,
-                "tr_id": "CTCA0903R",  # 국내휴장일조회 TR
-                "custtype": "P"  # P: 개인, B: 법인
-            }
+            headers = self._get_headers("CTCA0903R")
             
             params = {
                 "BASS_DT": base_date,   # 기준일자(YYYYMMDD)

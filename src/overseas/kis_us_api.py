@@ -29,6 +29,8 @@ class KISUSAPIManager:
         
         # 실전/모의투자 설정
         self.is_paper_trading = self.config['api']['is_paper_trading']
+        self.account_type = self.config['api']['account_type']  # 개인/법인 구분
+        
         if self.is_paper_trading:
             self.base_url = self.config['api']['paper']['url']
             self.api_key = self.config['api']['paper']['key']
@@ -40,7 +42,7 @@ class KISUSAPIManager:
             self.api_secret = self.config['api']['real']['secret']
             self.account_no = self.config['api']['real']['account']
         
-        self.logger.info(f"해외주식 API 매니저 초기화 완료 (모의투자: {self.is_paper_trading})")
+        self.logger.info(f"해외주식 API 매니저 초기화 완료 (모의투자: {self.is_paper_trading}, 계좌유형: {self.account_type})")
         
         # API 호출 간격 제어
         self.last_api_call = 0
@@ -48,6 +50,37 @@ class KISUSAPIManager:
         
         # 미국 시간대 설정
         self.us_timezone = pytz.timezone("America/New_York")
+    
+    def _get_headers(self, tr_id: str) -> Dict:
+        """API 요청에 사용할 헤더를 생성합니다.
+        
+        Args:
+            tr_id (str): TR ID
+            
+        Returns:
+            Dict: API 요청 헤더
+        """
+        access_token = self._check_token()
+        
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "authorization": f"Bearer {access_token}",
+            "appkey": self.api_key,
+            "appsecret": self.api_secret,
+            "tr_id": tr_id
+        }
+        
+        # 법인계좌인 경우 추가 헤더 설정
+        if self.account_type == "C":  # C: 법인
+            headers.update({
+                "custtype": "B",  # B: 법인
+                "hashkey": self.token_manager.customer_identification_key,
+                "ipaddr": self.token_manager.ip_address,
+                "globaluid": self.token_manager.global_uid,
+                "phone_number": self.token_manager.phone_number
+            })
+        
+        return headers
     
     def _check_token(self) -> str:
         """토큰의 유효성을 확인하고 필요시 갱신합니다."""
@@ -74,16 +107,8 @@ class KISUSAPIManager:
                     - tamt: 당일거래대금
                     - ordy: 매수가능여부
         """
-        access_token = self._check_token()
-        
         url = f"{self.base_url}/uapi/overseas-price/v1/quotations/price"
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {access_token}",
-            "appkey": self.api_key,
-            "appsecret": self.api_secret,
-            "tr_id": "HHDFS00000300"
-        }
+        headers = self._get_headers("HHDFS00000300")
         
         params = {
             "AUTH": "",
@@ -131,13 +156,7 @@ class KISUSAPIManager:
         access_token = self._check_token()
         
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {access_token}",
-            "appkey": self.api_key,
-            "appsecret": self.api_secret,
-            "tr_id": "VTTS3012R" if self.is_paper_trading else "TTTS3012R"  # 모의/실전 구분
-        }
+        headers = self._get_headers("VTTS3012R" if self.is_paper_trading else "TTTS3012R")
         
         params = {
             "CANO": self.account_no[:8],
@@ -227,19 +246,9 @@ class KISUSAPIManager:
         try:
             access_token = self._check_token()
             
-            # API 경로 설정
             url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
+            headers = self._get_headers("VTTS3007R" if self.is_paper_trading else "TTTS3007R")
             
-            # 헤더 설정
-            headers = {
-                "Content-Type": "application/json; charset=utf-8",
-                "authorization": f"Bearer {access_token}",
-                "appkey": self.api_key,
-                "appsecret": self.api_secret,
-                "tr_id": "VTTS3007R" if self.is_paper_trading else "TTTS3007R"  # 모의/실전 구분
-            }
-            
-            # 요청 파라미터
             params = {
                 "CANO": self.account_no[:8],
                 "ACNT_PRDT_CD": self.account_no[8:],
@@ -248,11 +257,9 @@ class KISUSAPIManager:
                 "OVRS_ORD_UNPR": "0"  # 주문단가 0으로 설정
             }
             
-            # API 요청
             response = requests.get(url, headers=headers, params=params)
             time.sleep(self.api_call_interval)
             
-            # 응답 확인
             if response.status_code == 200:
                 data = response.json()
                 if data['rt_cd'] == '0':
@@ -294,13 +301,7 @@ class KISUSAPIManager:
         else:
             tr_id = "TTTT1002U" if order_type == "BUY" else "TTTT1006U"  # 실전투자: 매수/매도
             
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {access_token}",
-            "appkey": self.api_key,
-            "appsecret": self.api_secret,
-            "tr_id": tr_id
-        }
+        headers = self._get_headers(tr_id)
         
         data = {
             "CANO": self.account_no[:8],                                # 종합계좌번호
@@ -363,13 +364,7 @@ class KISUSAPIManager:
             access_token = self._check_token()
             
             url = f"{self.base_url}/uapi/overseas-price/v1/quotations/dailyprice"
-            headers = {
-                "Content-Type": "application/json; charset=utf-8",
-                "authorization": f"Bearer {access_token}",
-                "appkey": self.api_key,
-                "appsecret": self.api_secret,
-                "tr_id": "HHDFS76240000"
-            }
+            headers = self._get_headers("HHDFS76240000")
             
             # 기간 구분 코드 변환 (D->0(일봉), W->1(주봉))
             gubn_code = "0"  # 기본값: 일봉
@@ -513,19 +508,9 @@ class KISUSAPIManager:
         try:
             access_token = self._check_token()
             
-            # API 경로 설정
             url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-present-balance"
+            headers = self._get_headers("VTRP6504R" if self.is_paper_trading else "CTRP6504R")
             
-            # 헤더 설정
-            headers = {
-                "Content-Type": "application/json; charset=utf-8",
-                "authorization": f"Bearer {access_token}",
-                "appkey": self.api_key,
-                "appsecret": self.api_secret,
-                "tr_id": "VTRP6504R" if self.is_paper_trading else "CTRP6504R"  # 모의/실전 구분
-            }
-            
-            # 요청 파라미터
             params = {
                 "CANO": self.account_no[:8],
                 "ACNT_PRDT_CD": self.account_no[8:],
@@ -601,17 +586,8 @@ class KISUSAPIManager:
         try:
             access_token = self._check_token()
             
-            # API 경로 설정
             url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-ccnl"
-            
-            # 헤더 설정
-            headers = {
-                "Content-Type": "application/json; charset=utf-8",
-                "authorization": f"Bearer {access_token}",
-                "appkey": self.api_key,
-                "appsecret": self.api_secret,
-                "tr_id": "VTTS3035R" if self.is_paper_trading else "TTTS3035R"  # 모의/실전 구분
-            }
+            headers = self._get_headers("VTTS3035R" if self.is_paper_trading else "TTTS3035R")
             
             # 미국 현지 시각 기준 당일 날짜 사용 (today 파라미터 무시)
             us_today = datetime.now(self.us_timezone).strftime("%Y%m%d")
