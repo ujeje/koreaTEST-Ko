@@ -65,11 +65,7 @@ class KISKRAPIManager:
         # 법인계좌인 경우 추가 헤더 설정
         if self.account_type == "C":  # C: 법인
             headers.update({
-                "custtype": "B",  # B: 법인
-                "hashkey": self.token_manager.customer_identification_key,
-                "ipaddr": self.token_manager.ip_address,
-                "globaluid": self.token_manager.global_uid,
-                "phone_number": self.token_manager.phone_number
+                "custtype": "B"  # B: 법인
             })
         
         return headers
