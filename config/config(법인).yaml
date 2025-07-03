@@ -1,0 +1,75 @@
+# 한국투자증권 API 설정
+api:
+  is_paper_trading: false                                   # 모의투자 여부 (true: 모의투자, false: 실전투자)
+  account_type: "P"                                        # 계좌 유형 (P: 개인, C: 법인)
+  
+  # 실전투자 설정 (법인-US)
+  real:
+    key: "PS4XeQmBtblo3FUqs37ih5mmujNDnnzVDlOs"         # 실전투자 API Key
+    secret: "hGYqy6CLgSUPH03nQBtc0J2LCADrQN8yJCnP5dpwNXCwZO9F/K7mw1VmWBXYAg4OIng80UGStV/v5u0YJ5VmmmRbEY/A2fiEEEWWJJrVT+GyI1Z2comKOCg4qRxiJVzlZ7BngAnzm497mkkFJ2Kw2HZBS1zI6UsDY1HL9XG/b2ELzvSZ8HY="  # 실전투자 API Secret
+    account: "8134308101"                                 # 실전투자 계좌번호
+    url: "https://openapi.koreainvestment.com:9443"      # 실전투자 서버 주소
+  
+  # 모의투자 설정
+  paper:
+    key: "PSvmbuTEwqCHwGOyPX5sgBbtikMELQZp2jH4"         # 모의투자 API Key
+    secret: "q536t5EvsrS5PJnRWQHzG4wcK+5rxWVEcGxMDlTLT9GERDvEPvhcF0as+1PCU1vLB5O4yx1O9Lo22dINklHg73bQkVz0hb5diyYUQDtd8r0GwPEjHHQI3dt7kdvNCIqoRUaOL8yriLrJE8S/IauY7SmGpF0EUcDUaMX9YHDGD+7PQhSwsUE="  # 모의투자 API Secret
+    account: "5013109301"                                 # 모의투자 계좌번호
+    url: "https://openapivts.koreainvestment.com:29443"  # 모의투자 서버 주소
+
+# 디스코드 웹훅 설정
+discord:
+  # 일반
+  # webhook_url: "https://discord.com/api/webhooks/1335848253966778398/SLtYvQNqca_tL-OdLoKTwPYYZIRVHkeT2vAeerInYN0RGCzTQ-itRrmOZETlAYS6F1Mf"  # 디스코드 알림 웹훅 URL
+  # 주식(미국)
+  # webhook_url: "https://discordapp.com/api/webhooks/1366499226636259399/puzEXgVkZv-zv6yjSVI5rvS3NOYNn2zk_t1szBIYghgQ7QvFoY45KsMo1fZNwUNX1Wtx"  # 디스코드 알림 웹훅 URL
+  # 주식(한국)
+  # webhook_url: "https://discordapp.com/api/webhooks/1366659430023827544/s7924BxjAz3XY7c2WfUIkrSj1CJ7lnvDt42MPbCuzarbPFmWSO7qQuvgZkz5qFLY8RZN"  # 디스코드 알림 웹훅 URL
+  # 주식(법인_미국)
+   webhook_url: "https://discord.com/api/webhooks/1375357314340622398/9Vm8mGaZQ2uBVqoEnkjGUVnkicqlaaca62MkRkBylNmEO81ZZ9f8d3NY53wyI8CpEgSD"  # 디스코드 알림 웹훅 URL
+  # 주식TEST
+  # webhook_url: "https://discordapp.com/api/webhooks/1366499513551814776/yws9_zwaOUtvXn6sXWwy1r1HCzIWZr4WCJSdR768nzk1FQvetvraZmpmktt5pMYl9Ngb"  # 디스코드 알림 웹훅 URL
+
+# 구글 스프레드시트 설정
+google_sheet:
+  spreadsheet_id: "1QTRTVou5Zdyx5bHm1h_04eCiuJ_MZnHg47hA2TEvJV4"  # 구글 스프레드시트 ID
+  credentials_path: 'config/google_credentials.json'                # 구글 API 인증 파일 경로
+  sheets:
+    settings_kr: "투자설정[KOR]"    # 국내 투자 설정 시트
+    settings_us: "투자설정[USA]"    # 미국 투자 설정 시트
+    holdings_kr: "주식현황[KOR]"    # 국내 주식 현황 시트
+    holdings_us: "주식현황[USA]"    # 미국 주식 현황 시트
+  coordinates:
+    # 투자설정 탭의 각 설정값 좌표 (국내/미국 공통)
+    settings:
+      max_individual_stocks: "H4"    # 최대 개별 종목 수
+      max_pool_stocks: "H5"          # 최대 POOL 종목 수
+
+      # 공통 설정
+      stop_loss: "H10"               # 스탑로스 설정값 (%)
+      trailing_start: "H11"          # 트레일링 시작 설정값 (%)
+      trailing_stop: "H12"           # 트레일링 스탑 설정값 (%)
+      rebalancing_date: "H7"        # 리밸런싱 일자
+      individual_stocks: "A21:P50"   # 개별 종목 목록 범위
+      pool_stocks: "A61:P80"         # POOL 종목 목록 범위
+    
+    # 주식현황 탭의 각 항목 좌표 (국내/미국 공통)
+    holdings:
+      last_update: "B5"            # 마지막 업데이트 시간
+      error_message: "B6"          # 에러 메시지
+      stock_list: "A11:K40"        # 보유 종목 리스트 범위
+
+# 매매 설정
+trading:
+  is_test_mode: false               # 테스트 모드 여부 (true: 항상 장 시작으로 간주, false: 실제 시간 기준 장 시작 확인)
+  market:
+    type: ['USA']                    # 거래 시장 설정 (KOR: 한국, USA: 미국)  type: ['KOR', 'USA']
+  kor_market_start: '0900'           # 한국 장 시작 시간 (HHMM)
+  kor_market_end: '1530'             # 한국 장 종료 시간 (HHMM)
+  usa_market_start: '0930'           # 미국 장 시작 시간 (미국 현지 시간, HHMM)
+  usa_market_end: '1600'             # 미국 장 종료 시간 (미국 현지 시간, HHMM)
+
+# 로깅 설정
+logging:
+  level: INFO                        # 로깅 레벨 (DEBUG/INFO/WARNING/ERROR/CRITICAL)
+  file_path: "logs/trading.log"      # 로그 파일 경로 

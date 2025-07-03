@@ -1,6 +1,6 @@
 # 한국투자증권 API 설정
 api:
-  is_paper_trading: true                                   # 모의투자 여부 (true: 모의투자, false: 실전투자)
+  is_paper_trading: false                                   # 모의투자 여부 (true: 모의투자, false: 실전투자)
   account_type: "P"                                        # 계좌 유형 (P: 개인, C: 법인)
   
   # 실전투자 설정 (병인)
@@ -71,9 +71,9 @@ trading:
   is_test_mode: false               # 테스트 모드 여부 (true: 항상 장 시작으로 간주, false: 실제 시간 기준 장 시작 확인)
   market:
     type: ['KOR']                    # 거래 시장 설정 (KOR: 한국, USA: 미국)  type: ['KOR', 'USA']
-  kor_market_start: '1403'           # 한국 장 시작 시간 (HHMM)  09:00
+  kor_market_start: '0900'           # 한국 장 시작 시간 (HHMM)  09:00
   kor_market_end: '1530'             # 한국 장 종료 시간 (HHMM)
-  usa_market_start: '1447'          # 미국 장 시작 시간 (미국 현지 시간, HHMM)  09:30
+  usa_market_start: '0930'          # 미국 장 시작 시간 (미국 현지 시간, HHMM)  09:30
   usa_market_end: '1600'             # 미국 장 종료 시간 (미국 현지 시간, HHMM)
 
 # 로깅 설정

@@ -132,7 +132,7 @@ class KRTrader(BaseTrader):
             if holiday_info:
                 self.holiday_cache[current_date] = holiday_info
                 self.holiday_cache_date = current_date
-                self.logger.info(f"휴장일 정보 캐시 업데이트 완료: {holiday_info}")
+                self.logger.info(f"휴장일 정보 캐시 업데이트 완료")
             else:
                 self.logger.error("휴장일 정보를 가져오는데 실패했습니다.")
                 return False
@@ -144,7 +144,20 @@ class KRTrader(BaseTrader):
                 return False
         
         # 개장일 여부 확인 (opnd_yn: 'Y'인 경우 개장일)
-        is_open = holiday_info.get('opnd_yn') == 'Y'
+        # holiday_info가 리스트인 경우와 딕셔너리인 경우 모두 처리
+        if isinstance(holiday_info, list):
+            # 리스트인 경우 첫 번째 항목 사용
+            if len(holiday_info) > 0:
+                holiday_data = holiday_info[0]
+            else:
+                self.logger.error("휴장일 정보가 비어있습니다.")
+                return False
+        else:
+            # 딕셔너리인 경우 그대로 사용
+            holiday_data = holiday_info
+        
+        # 개장일 여부 확인 (opnd_yn: 'Y'인 경우 개장일)
+        is_open = holiday_data.get('opnd_yn') == 'Y'
         if not is_open:
             self.logger.info(f"오늘({current_date})은 개장일이 아닙니다. (휴장)")
         else:

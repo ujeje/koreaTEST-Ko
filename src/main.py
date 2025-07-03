@@ -102,38 +102,46 @@ def main():
     """메인 실행 함수"""
     config_path = 'config/config.yaml'
     
-    # 설정 파일 로드
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-    
-    # 메인 로거 설정
-    logger = setup_logger('MAIN', config)
-    
-    # 거래 시장 설정 확인
-    market_type = config['trading']['market']['type']
-
-    traders = {}
-
-    # 트레이더 초기화 (아직 설정은 로드하지 않음)
-    if ('KOR' in market_type):
-        kr_trader = KRTrader(config_path)
-        traders['KOR'] = kr_trader
-        logger.info("한국 주식 트레이더가 초기화되었습니다.")
-
-    if ('USA' in market_type):
-        us_trader = USTrader(config_path)
-        traders['USA'] = us_trader
-        logger.info("미국 주식 트레이더가 초기화되었습니다.")
-
-    if not traders:
-        logger.error("설정된 거래 시장이 없습니다.")
-        return
-
-    # 현재 활성화된 시장 추적
-    active_markets = set()
-    prev_active_markets = set()
-
     try:
+        # 설정 파일 로드
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        
+        # 메인 로거 설정
+        logger = setup_logger('MAIN', config)
+        
+        # 거래 시장 설정 확인
+        market_type = config['trading']['market']['type']
+
+        traders = {}
+
+        # 트레이더 초기화 (아직 설정은 로드하지 않음)
+        if ('KOR' in market_type):
+            try:
+                kr_trader = KRTrader(config_path)
+                traders['KOR'] = kr_trader
+                logger.info("한국 주식 트레이더가 초기화되었습니다.")
+            except Exception as e:
+                logger.error(f"한국 주식 트레이더 초기화 실패: {str(e)}", exc_info=True)
+                return
+
+        if ('USA' in market_type):
+            try:
+                us_trader = USTrader(config_path)
+                traders['USA'] = us_trader
+                logger.info("미국 주식 트레이더가 초기화되었습니다.")
+            except Exception as e:
+                logger.error(f"미국 주식 트레이더 초기화 실패: {str(e)}", exc_info=True)
+                return
+
+        if not traders:
+            logger.error("설정된 거래 시장이 없습니다.")
+            return
+
+        # 현재 활성화된 시장 추적
+        active_markets = set()
+        prev_active_markets = set()
+
         while True:
             try:
                 # 현재 운영 중인 시장 확인
@@ -168,16 +176,7 @@ def main():
                             # 설정 출력
                             #print_trading_settings(logger, market, traders[market])
                         except Exception as e:
-                            error_msg = f"{market} 시장 설정 로드 실패: {str(e)}"
-                            logger.error(error_msg)
-                            # 디스코드로 알림 보내기
-                            try:
-                                webhook = DiscordWebhook(url=config['discord']['webhook_url'], 
-                                                        content=f"```diff\n- {error_msg}\n```")
-                                webhook.execute()
-                            except Exception as webhook_error:
-                                logger.error(f"디스코드 알림 전송 실패: {str(webhook_error)}")
-                            
+                            logger.error(f"{market} 시장 설정 로드 실패: {str(e)}", exc_info=True)
                             logger.error("구글 스프레드시트에서 설정을 로드하지 못해 프로그램을 종료합니다.")
                             # 프로그램 종료
                             sys.exit(1)
@@ -194,7 +193,7 @@ def main():
                             # 주식 현황 업데이트
                             traders[market].update_stock_report()
                         except Exception as e:
-                            logger.error(f"{market} 시장 매매 실행 중 오류 발생: {str(e)}")
+                            logger.error(f"{market} 시장 매매 실행 중 오류 발생: {str(e)}", exc_info=True)
                 else:
                     logger.info("현재 운영 중인 시장이 없습니다. 대기 중...")
                 
@@ -203,11 +202,14 @@ def main():
                 time.sleep(60)
                 
             except Exception as e:
-                logger.error(f"메인 루프 실행 중 오류 발생: {str(e)}")
+                logger.error(f"메인 루프 실행 중 오류 발생: {str(e)}", exc_info=True)
                 time.sleep(30)
                 
     except KeyboardInterrupt:
         logger.info("프로그램이 종료되었습니다.")
+    except Exception as e:
+        logger.error(f"프로그램 실행 중 치명적 오류 발생: {str(e)}", exc_info=True)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main() 

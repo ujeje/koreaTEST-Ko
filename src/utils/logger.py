@@ -106,6 +106,10 @@ class CustomLogger:
     
     def _should_send_to_discord(self, message: str, level: str) -> bool:
         """디스코드로 전송해야 하는 메시지인지 확인합니다."""
+        # 에러 메시지는 항상 전송
+        if level in ["ERROR", "CRITICAL"] or "오류" in message or "실패" in message or "에러" in message:
+            return True
+        
         # 마켓 상태 메시지 체크
         market_status_keywords = [
             "현재 장 운영 시간이 아닙니다",
@@ -133,10 +137,6 @@ class CustomLogger:
         if any(keyword in message for keyword in ["매수", "매도", "스탑로스", "트레일링 스탑"]):
             return True
         
-        # 오류 메시지
-        if level == "ERROR" or "오류" in message:
-            return True
-        
         # 프로그램 상태 메시지
         if any(keyword in message for keyword in ["시작", "종료", "장 시작", "장 마감"]):
             return True
@@ -151,12 +151,57 @@ class CustomLogger:
         """디스코드로 메시지를 전송합니다."""
         try:
             formatted_message = self._format_discord_message(message, level)
-            webhook = DiscordWebhook(
-                url=self.discord_webhook_url,
-                content=formatted_message,
-                rate_limit_retry=True
-            )
-            response = webhook.execute()
+            
+            # Discord 메시지 길이 제한 (2000글자)
+            max_length = 1900  # 여유분을 두고 1900글자로 제한
+            
+            if len(formatted_message) <= max_length:
+                # 메시지가 제한보다 짧으면 그대로 전송
+                webhook = DiscordWebhook(
+                    url=self.discord_webhook_url,
+                    content=formatted_message,
+                    rate_limit_retry=True
+                )
+                response = webhook.execute()
+            else:
+                # 메시지가 길면 원본 메시지를 분할해서 전송
+                lines = message.split('\n')
+                current_message = ""
+                message_count = 1
+                
+                for line in lines:
+                    # 현재 메시지에 줄을 추가했을 때 길이 확인
+                    test_message = current_message + line + '\n'
+                    formatted_test = self._format_discord_message(test_message, level)
+                    
+                    if len(formatted_test) <= max_length:
+                        current_message += line + '\n'
+                    else:
+                        # 현재 메시지를 전송
+                        if current_message:
+                            header = f"📄 로그 {message_count}/분할 "
+                            formatted_current = self._format_discord_message(header + current_message, level)
+                            webhook = DiscordWebhook(
+                                url=self.discord_webhook_url,
+                                content=formatted_current,
+                                rate_limit_retry=True
+                            )
+                            response = webhook.execute()
+                            message_count += 1
+                        
+                        # 새 메시지 시작
+                        current_message = line + '\n'
+                
+                # 마지막 메시지 전송
+                if current_message:
+                    header = f"📄 로그 {message_count}/분할 "
+                    formatted_current = self._format_discord_message(header + current_message, level)
+                    webhook = DiscordWebhook(
+                        url=self.discord_webhook_url,
+                        content=formatted_current,
+                        rate_limit_retry=True
+                    )
+                    response = webhook.execute()
             
             # 실제 오류 상태 코드일 때만 로그 출력 (4xx, 5xx)
             if response.status_code >= 400:
@@ -176,9 +221,9 @@ class CustomLogger:
         if send_discord and self.discord_webhook_url and self._should_send_to_discord(message, "WARNING"):
             self._send_to_discord(message, "WARNING")
     
-    def error(self, message: str, send_discord: bool = True) -> None:
+    def error(self, message: str, send_discord: bool = True, exc_info: bool = False) -> None:
         """ERROR 레벨 로그를 기록합니다."""
-        self.logger.error(message)
+        self.logger.error(message, exc_info=exc_info)
         if send_discord and self.discord_webhook_url and self._should_send_to_discord(message, "ERROR"):
             self._send_to_discord(message, "ERROR")
     

@@ -48,9 +48,41 @@ class BaseTrader:
         try:
             if not self.discord_webhook_url:
                 return
+            
+            # Discord 메시지 길이 제한 (2000글자)
+            max_length = 1900  # 여유분을 두고 1900글자로 제한
+            
+            if len(message) <= max_length:
+                # 메시지가 제한보다 짧으면 그대로 전송
+                webhook = DiscordWebhook(url=self.discord_webhook_url, content=message)
+                webhook.execute()
+            else:
+                # 메시지가 길면 분할해서 전송
+                lines = message.split('\n')
+                current_message = ""
+                message_count = 1
                 
-            webhook = DiscordWebhook(url=self.discord_webhook_url, content=message)
-            webhook.execute()
+                for line in lines:
+                    # 현재 메시지에 줄을 추가했을 때 길이 확인
+                    if len(current_message + line + '\n') <= max_length:
+                        current_message += line + '\n'
+                    else:
+                        # 현재 메시지를 전송
+                        if current_message:
+                            header = f"📄 메시지 {message_count}/분할\n"
+                            webhook = DiscordWebhook(url=self.discord_webhook_url, content=header + current_message)
+                            webhook.execute()
+                            message_count += 1
+                        
+                        # 새 메시지 시작
+                        current_message = line + '\n'
+                
+                # 마지막 메시지 전송
+                if current_message:
+                    header = f"📄 메시지 {message_count}/분할\n"
+                    webhook = DiscordWebhook(url=self.discord_webhook_url, content=header + current_message)
+                    webhook.execute()
+                    
         except Exception as e:
             self.logger.error(f"디스코드 메시지 전송 실패: {str(e)}")
     
